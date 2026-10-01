@@ -1,6 +1,6 @@
 (() => {
     "use strict";
-
+    
     const auth = window.AttendanceAuth;
     const byId = id => document.getElementById(id);
     const sessionPanel = byId("sessionPanel");
