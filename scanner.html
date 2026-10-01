@@ -1,1 +1,60 @@
-
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Registrar entrada | Asistencia</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="config.js" defer></script>
+    <script src="auth.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+    <script src="scanner.js" defer></script>
+</head>
+<body data-page="scanner">
+    <main class="card scanner-card">
+        <header class="card-header">
+            <div class="header-row">
+                <p class="eyebrow">PUNTO CLÍNICO · RIFA 2026</p>
+                <button id="logoutButton" class="text-button" type="button">Cerrar sesión</button>
+            </div>
+            <p class="app-title" data-app-title>Control de asistencia</p>
+            <h1>Registrar entrada</h1>
+        </header>
+        <section id="sessionPanel" class="card-body" aria-live="polite">
+            <p id="sessionMessage">Verificando sesión…</p>
+            <button id="sessionRetry" class="primary" type="button" hidden>Reintentar</button>
+        </section>
+        <section id="capturePanel" class="card-body" hidden>
+            <div class="camera-box"><div id="reader"></div></div>
+            <p id="cameraMessage" class="camera-message" role="status">Activando cámara…</p>
+            <button id="cameraButton" class="secondary compact" type="button">Activar cámara</button>
+            <div class="separator"><span>o</span></div>
+            <form id="attendanceForm">
+                <div class="label-row">
+                    <label for="folio">Folio</label>
+                    <span class="badge">También puedes escribirlo</span>
+                </div>
+                <input id="folio" name="folio" type="text" placeholder="Folio" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="folioHelp" required>
+                <p id="folioHelp" class="help" aria-live="polite">Escanea el QR o ingresa el folio manualmente.</p>
+                <button id="confirmButton" class="primary" type="submit">Confirmar asistencia</button>
+            </form>
+        </section>
+        <section id="resultPanel" class="card-body result" hidden aria-labelledby="resultTitle">
+            <span id="resultBadge" class="result-badge"></span>
+            <h2 id="resultTitle" tabindex="-1"></h2>
+            <p id="resultMessage" class="result-message"></p>
+            <div id="participantDetails" hidden>
+                <p id="participantName" class="participant-name"></p>
+                <dl>
+                    <div><dt>Folio</dt><dd id="participantFolio"></dd></div>
+                    <div><dt>Hora registrada de entrada</dt><dd id="participantTime"></dd></div>
+                    <div><dt>Método de registro</dt><dd id="participantMethod"></dd></div>
+                </dl>
+            </div>
+            <button id="nextButton" class="primary" type="button">Escanear siguiente</button>
+        </section>
+        <p id="globalMessage" class="global-message" role="status" aria-live="polite"></p>
+    </main>
+</body>
+</html>
