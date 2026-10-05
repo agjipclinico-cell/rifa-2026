@@ -2,59 +2,340 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="referrer" content="no-referrer">
-    <title>Registrar entrada | Asistencia</title>
-    <link rel="stylesheet" href="styles.css">
-    <script src="config.js" defer></script>
-    <script src="auth.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
-    <script src="scanner.js" defer></script>
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="light"
+    >
+
+    <title>Control de asistencia - Rifa 2026</title>
+
+    <link
+        rel="stylesheet"
+        href="styles.css"
+    >
 </head>
+
 <body data-page="scanner">
-    <main class="card scanner-card">
-        <header class="card-header">
-            <div class="header-row">
-                <p class="eyebrow">PUNTO CLÍNICO · RIFA 2026</p>
-                <button id="logoutButton" class="text-button" type="button">Cerrar sesión</button>
+
+    <main class="app-shell">
+
+        <header class="app-header">
+
+            <div>
+                <p class="app-eyebrow">
+                    Punto Clínico Especialistas
+                </p>
+
+                <h1 data-app-title>
+                    Control de asistencia - Rifa 2026
+                </h1>
             </div>
-            <p class="app-title" data-app-title>Control de asistencia</p>
-            <h1>Registrar entrada</h1>
+
+            <button
+                id="logoutButton"
+                class="button button-secondary"
+                type="button"
+            >
+                Cerrar sesión
+            </button>
+
         </header>
-        <section id="sessionPanel" class="card-body" aria-live="polite">
-            <p id="sessionMessage">Verificando sesión…</p>
-            <button id="sessionRetry" class="primary" type="button" hidden>Reintentar</button>
-        </section>
-        <section id="capturePanel" class="card-body" hidden>
-            <div class="camera-box"><div id="reader"></div></div>
-            <p id="cameraMessage" class="camera-message" role="status">Activando cámara…</p>
-            <button id="cameraButton" class="secondary compact" type="button">Activar cámara</button>
-            <div class="separator"><span>o</span></div>
-            <form id="attendanceForm">
-                <div class="label-row">
-                    <label for="folio">Folio</label>
-                    <span class="badge">También puedes escribirlo</span>
-                </div>
-                <input id="folio" name="folio" type="text" placeholder="Folio" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="folioHelp" required>
-                <p id="folioHelp" class="help" aria-live="polite">Escanea el QR o ingresa el folio manualmente.</p>
-                <button id="confirmButton" class="primary" type="submit">Confirmar asistencia</button>
-            </form>
-        </section>
-        <section id="resultPanel" class="card-body result" hidden aria-labelledby="resultTitle">
-            <span id="resultBadge" class="result-badge"></span>
-            <h2 id="resultTitle" tabindex="-1"></h2>
-            <p id="resultMessage" class="result-message"></p>
-            <div id="participantDetails" hidden>
-                <p id="participantName" class="participant-name"></p>
-                <dl>
-                    <div><dt>Folio</dt><dd id="participantFolio"></dd></div>
-                    <div><dt>Hora registrada de entrada</dt><dd id="participantTime"></dd></div>
-                    <div><dt>Método de registro</dt><dd id="participantMethod"></dd></div>
-                </dl>
+
+
+        <p
+            id="globalMessage"
+            class="global-message"
+            aria-live="polite"
+        ></p>
+
+
+        <!-- Verificación inicial de la sesión -->
+        <section
+            id="sessionPanel"
+            class="card"
+        >
+
+            <div class="card-body centered">
+
+                <h2>
+                    Verificando sesión
+                </h2>
+
+                <p
+                    id="sessionMessage"
+                    class="muted"
+                    aria-live="polite"
+                >
+                    Verificando sesión…
+                </p>
+
+                <button
+                    id="sessionRetry"
+                    class="button button-primary"
+                    type="button"
+                    hidden
+                >
+                    Reintentar
+                </button>
+
             </div>
-            <button id="nextButton" class="primary" type="button">Escanear siguiente</button>
+
         </section>
-        <p id="globalMessage" class="global-message" role="status" aria-live="polite"></p>
+
+
+        <!-- Captura de asistencia -->
+        <section
+            id="capturePanel"
+            class="card"
+            hidden
+        >
+
+            <div class="card-body">
+
+                <div class="section-header">
+
+                    <div>
+                        <p class="section-eyebrow">
+                            Registro de entrada
+                        </p>
+
+                        <h2>
+                            Confirmar asistencia
+                        </h2>
+
+                        <p class="muted">
+                            Escanea el código QR del colaborador o ingresa manualmente los últimos cuatro caracteres de su folio.
+                        </p>
+                    </div>
+
+                </div>
+
+
+                <div class="scanner-layout">
+
+                    <!-- Cámara -->
+                    <div class="scanner-column">
+
+                        <div
+                            id="reader"
+                            class="qr-reader"
+                        ></div>
+
+                        <p
+                            id="cameraMessage"
+                            class="camera-message"
+                            aria-live="polite"
+                        >
+                            Preparando cámara…
+                        </p>
+
+                        <button
+                            id="cameraButton"
+                            class="button button-secondary button-full"
+                            type="button"
+                        >
+                            Activar cámara
+                        </button>
+
+                    </div>
+
+
+                    <!-- Captura manual -->
+                    <div class="manual-column">
+
+                        <div class="divider-label">
+                            <span>
+                                o captura manual
+                            </span>
+                        </div>
+
+
+                        <form
+                            id="attendanceForm"
+                            novalidate
+                        >
+
+                            <div class="field-group">
+
+                                <label
+                                    for="folio"
+                                    class="field-label"
+                                >
+                                    Folio del colaborador
+                                </label>
+
+
+                                <div class="folio-input-group">
+
+                                    <span
+                                        class="folio-prefix"
+                                        aria-hidden="true"
+                                    >
+                                        RAPC-
+                                    </span>
+
+                                    <input
+                                        id="folio"
+                                        name="folioSuffix"
+                                        class="folio-suffix-input"
+                                        type="text"
+                                        inputmode="text"
+                                        autocomplete="off"
+                                        autocapitalize="characters"
+                                        spellcheck="false"
+                                        maxlength="4"
+                                        pattern="[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}"
+                                        placeholder="XXXX"
+                                        aria-label="Últimos cuatro caracteres del folio RAPC"
+                                        aria-describedby="folioHelp"
+                                    >
+
+                                </div>
+
+
+                                <p
+                                    id="folioHelp"
+                                    class="field-help"
+                                >
+                                    Escanea el QR o ingresa los 4 caracteres finales del folio.
+                                </p>
+
+                            </div>
+
+
+                            <button
+                                id="confirmButton"
+                                class="button button-primary button-full"
+                                type="submit"
+                            >
+                                Confirmar asistencia
+                            </button>
+
+                        </form>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- Resultado -->
+        <section
+            id="resultPanel"
+            class="card result"
+            hidden
+        >
+
+            <div class="card-body">
+
+                <div
+                    id="resultBadge"
+                    class="result-badge"
+                >
+                    Resultado
+                </div>
+
+
+                <h2
+                    id="resultTitle"
+                    tabindex="-1"
+                >
+                    Resultado
+                </h2>
+
+
+                <p
+                    id="resultMessage"
+                    class="result-message"
+                    aria-live="polite"
+                ></p>
+
+
+                <div
+                    id="participantDetails"
+                    class="participant-details"
+                    hidden
+                >
+
+                    <div class="detail-row">
+
+                        <span class="detail-label">
+                            Colaborador
+                        </span>
+
+                        <strong id="participantName"></strong>
+
+                    </div>
+
+
+                    <div class="detail-row">
+
+                        <span class="detail-label">
+                            Folio
+                        </span>
+
+                        <strong id="participantFolio"></strong>
+
+                    </div>
+
+
+                    <div class="detail-row">
+
+                        <span class="detail-label">
+                            Hora de entrada
+                        </span>
+
+                        <strong id="participantTime"></strong>
+
+                    </div>
+
+
+                    <div class="detail-row">
+
+                        <span class="detail-label">
+                            Método
+                        </span>
+
+                        <strong id="participantMethod"></strong>
+
+                    </div>
+
+                </div>
+
+
+                <button
+                    id="nextButton"
+                    class="button button-primary button-full"
+                    type="button"
+                >
+                    Escanear siguiente
+                </button>
+
+            </div>
+
+        </section>
+
     </main>
+
+
+    <script src="config.js"></script>
+
+    <script src="auth.js"></script>
+
+    <script
+        src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"
+    ></script>
+
+    <script src="scanner.js"></script>
+
 </body>
 </html>
