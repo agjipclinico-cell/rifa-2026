@@ -1,5 +1,5 @@
 window.AttendanceConfig = Object.freeze({
-    API_URL: "https://script.google.com/macros/s/AKfycbwznT5U2lXe2ruU8ptJ2fUg-8AcRuOLn9wpfyRo5af9JKZ3Cj3snjy9dEDhio1cpls_QA/exec",
+    API_URL: "https://script.google.com/macros/s/AKfycbxEASP-Z7rvpEektsXfAQpmfhNBLFV0jlqtdBYDHMg39XVLyWy5kSpTxd8J1xdn7HFXQw/exec",
     TITLE: "Control de asistencia - Rifa 2026",
     REQUEST_TIMEOUT_MS: 30000
 });
