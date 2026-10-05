@@ -3,365 +3,933 @@
 
     const config = window.AttendanceConfig;
 
-    async function request(action, parameters = {}, method = "POST") {
-        const url = new URL(config.API_URL);
-        const body = new URLSearchParams({ action, ...parameters });
 
-        if (method === "GET") {
-            url.search = body.toString();
+    function createRequestId() {
+
+        if (
+            window.crypto &&
+            typeof window.crypto.randomUUID === "function"
+        ) {
+
+            return window.crypto.randomUUID();
+
         }
 
-        const maxAttempts =
-            action === "confirmAttendance" && method === "POST"
-                ? 2
-                : 1;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const startedAt = Date.now();
-            const controller = new AbortController();
+        if (
+            window.crypto &&
+            typeof window.crypto.getRandomValues === "function"
+        ) {
 
-            const timeout = setTimeout(
-                () => controller.abort(),
-                config.REQUEST_TIMEOUT_MS
+            const bytes =
+                new Uint8Array(16);
+
+            window.crypto.getRandomValues(
+                bytes
             );
 
+            return Array
+                .from(
+                    bytes,
+                    value =>
+                        value
+                            .toString(16)
+                            .padStart(2, "0")
+                )
+                .join("");
+
+        }
+
+
+        return (
+            Date.now().toString(36)
+            +
+            "-"
+            +
+            Math.random()
+                .toString(36)
+                .slice(2)
+            +
+            Math.random()
+                .toString(36)
+                .slice(2)
+        );
+
+    }
+
+
+    async function request(
+        action,
+        parameters = {},
+        method = "POST"
+    ) {
+
+        const url =
+            new URL(
+                config.API_URL
+            );
+
+
+        const body =
+            new URLSearchParams({
+                action,
+                ...parameters
+            });
+
+
+        if (
+            method === "GET"
+        ) {
+
+            url.search =
+                body.toString();
+
+        }
+
+
+        /*
+         * Solo reintentamos automáticamente
+         * operaciones que son seguras/idempotentes.
+         *
+         * confirmAttendance es seguro porque usa
+         * requestId y el backend devuelve el
+         * resultado original del primer intento.
+         */
+        const retryableActions =
+            new Set([
+                "appInfo",
+                "validateSession",
+                "confirmAttendance",
+                "logout"
+            ]);
+
+
+        const maxAttempts =
+            retryableActions.has(
+                action
+            )
+                ?
+                2
+                :
+                1;
+
+
+        for (
+            let attempt = 1;
+            attempt <= maxAttempts;
+            attempt++
+        ) {
+
+            const startedAt =
+                Date.now();
+
+
+            const controller =
+                new AbortController();
+
+
+            const timeout =
+                setTimeout(
+                    () =>
+                        controller.abort(),
+                    config.REQUEST_TIMEOUT_MS
+                );
+
+
             const options = {
+
                 method,
-                credentials: "omit",
-                redirect: "follow",
-                cache: "no-store",
-                signal: controller.signal
+
+                credentials:
+                    "omit",
+
+                redirect:
+                    "follow",
+
+                cache:
+                    "no-store",
+
+                signal:
+                    controller.signal
+
             };
 
-            if (method !== "GET") {
-                options.body = body;
+
+            if (
+                method !== "GET"
+            ) {
+
+                options.body =
+                    body;
+
             }
 
-            let phase = "FETCH";
-            let httpStatus = null;
+
+            let phase =
+                "FETCH";
+
+            let httpStatus =
+                null;
+
 
             try {
-                console.info("[API envío]", {
-                    action,
-                    method,
-                    attempt
-                });
 
-                const response = await fetch(url, options);
-                httpStatus = response.status;
+                console.info(
+                    "[API envío]",
+                    {
+                        action,
+                        method,
+                        attempt
+                    }
+                );
 
-                if (!response.ok) {
-                    const error = new Error(
-                        `El servidor respondió HTTP ${response.status}.`
+
+                const response =
+                    await fetch(
+                        url,
+                        options
                     );
 
-                    error.httpStatus = response.status;
-                    throw error;
-                }
 
-                phase = "JSON";
+                httpStatus =
+                    response.status;
 
-                const result = await response.json();
-
-                if (!result || typeof result.success !== "boolean") {
-                    const error = new Error(
-                        "La respuesta no contiene success como booleano."
-                    );
-
-                    error.diagnosticCode = "INVALID_RESPONSE";
-                    throw error;
-                }
-
-                console.info("[API respuesta]", {
-                    action,
-                    attempt,
-                    milliseconds: Date.now() - startedAt,
-                    httpStatus,
-                    success: result.success,
-                    code: result.code
-                });
-
-                return result;
-            } catch (error) {
-                console.warn("[API fallo]", {
-                    action,
-                    attempt,
-                    phase,
-                    milliseconds: Date.now() - startedAt,
-                    httpStatus,
-                    errorType: error.name,
-                    diagnosticCode: error.diagnosticCode
-                });
 
                 if (
-                    error.httpStatus === 404 &&
-                    attempt < maxAttempts
+                    !response.ok
                 ) {
-                    console.info("[API reintento]", {
+
+                    const error =
+                        new Error(
+                            `El servidor respondió HTTP ${response.status}.`
+                        );
+
+
+                    error.httpStatus =
+                        response.status;
+
+
+                    throw error;
+
+                }
+
+
+                phase =
+                    "JSON";
+
+
+                const result =
+                    await response.json();
+
+
+                if (
+                    !result ||
+                    typeof result.success !==
+                        "boolean"
+                ) {
+
+                    const error =
+                        new Error(
+                            "La respuesta no contiene success como booleano."
+                        );
+
+
+                    error.diagnosticCode =
+                        "INVALID_RESPONSE";
+
+
+                    throw error;
+
+                }
+
+
+                console.info(
+                    "[API respuesta]",
+                    {
                         action,
-                        reason: "HTTP_404",
-                        nextAttempt: attempt + 1
-                    });
+                        attempt,
+                        milliseconds:
+                            Date.now()
+                            -
+                            startedAt,
+                        httpStatus,
+                        success:
+                            result.success,
+                        code:
+                            result.code
+                    }
+                );
+
+
+                return result;
+
+            }
+            catch (error) {
+
+                console.warn(
+                    "[API fallo]",
+                    {
+                        action,
+                        attempt,
+                        phase,
+                        milliseconds:
+                            Date.now()
+                            -
+                            startedAt,
+                        httpStatus,
+                        errorType:
+                            error.name,
+                        diagnosticCode:
+                            error.diagnosticCode
+                    }
+                );
+
+
+                /*
+                 * El 404 puede aparecer después
+                 * de que Apps Script haya ejecutado
+                 * correctamente la operación pero
+                 * falle la recuperación de la
+                 * respuesta de ContentService.
+                 */
+                if (
+                    error.httpStatus ===
+                        404
+                    &&
+                    attempt <
+                        maxAttempts
+                ) {
+
+                    console.info(
+                        "[API reintento]",
+                        {
+                            action,
+                            reason:
+                                "HTTP_404",
+                            nextAttempt:
+                                attempt + 1
+                        }
+                    );
+
 
                     continue;
+
                 }
+
 
                 let message;
 
-                if (error.name === "AbortError") {
+
+                if (
+                    error.name ===
+                        "AbortError"
+                ) {
+
                     message =
                         "Se agotó el tiempo de espera de la respuesta.";
-                } else if (error.httpStatus) {
+
+                }
+                else if (
+                    error.httpStatus
+                ) {
+
                     message =
                         `No se pudo recuperar la respuesta del servidor (HTTP ${error.httpStatus}).`;
-                } else if (error.name === "SyntaxError") {
+
+                }
+                else if (
+                    error.name ===
+                        "SyntaxError"
+                ) {
+
                     message =
                         "Se recibió una respuesta que no es JSON válido.";
-                } else if (
-                    error.diagnosticCode === "INVALID_RESPONSE"
+
+                }
+                else if (
+                    error.diagnosticCode ===
+                        "INVALID_RESPONSE"
                 ) {
-                    message = error.message;
-                } else {
+
+                    message =
+                        error.message;
+
+                }
+                else {
+
                     message =
                         "El navegador no pudo recibir la respuesta. Revisa la conexión y la petición en Red.";
+
                 }
 
-                const failure = new Error(message);
 
-                failure.httpStatus = httpStatus;
+                const failure =
+                    new Error(
+                        message
+                    );
+
+
+                failure.httpStatus =
+                    httpStatus;
+
+
                 failure.diagnosticCode =
-                    error.diagnosticCode || error.name;
+                    error.diagnosticCode
+                    ||
+                    error.name;
+
 
                 throw failure;
-            } finally {
-                clearTimeout(timeout);
+
             }
+            finally {
+
+                clearTimeout(
+                    timeout
+                );
+
+            }
+
         }
+
     }
+
 
     function getToken() {
-        return sessionStorage.getItem("attendanceToken") || "";
+
+        return (
+            sessionStorage
+                .getItem(
+                    "attendanceToken"
+                )
+            ||
+            ""
+        );
+
     }
 
-    function saveSession(result) {
-        sessionStorage.setItem("attendanceToken", result.token);
 
-        if (Number.isFinite(result.expiresAt)) {
+    function saveSession(
+        result
+    ) {
+
+        sessionStorage.setItem(
+            "attendanceToken",
+            result.token
+        );
+
+
+        if (
+            Number.isFinite(
+                result.expiresAt
+            )
+        ) {
+
             sessionStorage.setItem(
                 "attendanceExpiresAt",
-                String(result.expiresAt)
+                String(
+                    result.expiresAt
+                )
             );
-        } else {
-            sessionStorage.removeItem("attendanceExpiresAt");
+
         }
+        else {
+
+            sessionStorage.removeItem(
+                "attendanceExpiresAt"
+            );
+
+        }
+
     }
+
 
     function clearSession() {
-        sessionStorage.removeItem("attendanceToken");
-        sessionStorage.removeItem("attendanceExpiresAt");
+
+        sessionStorage.removeItem(
+            "attendanceToken"
+        );
+
+        sessionStorage.removeItem(
+            "attendanceExpiresAt"
+        );
+
     }
 
-    function goToLogin(expired = false) {
+
+    function goToLogin(
+        expired = false
+    ) {
+
         clearSession();
 
+
         window.location.replace(
-            expired ? "index.html?expired=1" : "index.html"
+            expired
+                ?
+                "index.html?expired=1"
+                :
+                "index.html"
         );
+
     }
 
+
     async function loadAppInfo() {
-        document.querySelectorAll("[data-app-title]").forEach(element => {
-            element.textContent = config.TITLE;
-        });
+
+        document
+            .querySelectorAll(
+                "[data-app-title]"
+            )
+            .forEach(
+                element => {
+
+                    element.textContent =
+                        config.TITLE;
+
+                }
+            );
+
 
         try {
-            const result = await request("appInfo", {}, "GET");
+
+            const result =
+                await request(
+                    "appInfo",
+                    {},
+                    "GET"
+                );
+
 
             if (
                 result.success &&
-                typeof result.title === "string"
+                typeof result.title ===
+                    "string"
             ) {
-                document.querySelectorAll("[data-app-title]").forEach(
-                    element => {
-                        element.textContent = result.title;
-                    }
-                );
+
+                document
+                    .querySelectorAll(
+                        "[data-app-title]"
+                    )
+                    .forEach(
+                        element => {
+
+                            element.textContent =
+                                result.title;
+
+                        }
+                    );
+
             }
-        } catch {
+
         }
+        catch {
+
+            /*
+             * appInfo no es crítico.
+             * Se conserva el título local.
+             */
+
+        }
+
     }
 
-    window.AttendanceAuth = Object.freeze({
-        request,
-        getToken,
-        saveSession,
-        clearSession,
-        goToLogin,
-        loadAppInfo,
 
-        login: (username, password) =>
-            request("login", {
-                username,
-                password
-            }),
+    window.AttendanceAuth =
+        Object.freeze({
 
-        validateSession: token =>
-            request("validateSession", {
-                token
-            }),
+            request,
 
-        confirmAttendance: (token, folio, method) =>
-            request("confirmAttendance", {
-                token,
-                folio,
-                method
-            }),
+            createRequestId,
 
-        logout: token =>
-            request("logout", {
-                token
-            })
-    });
+            getToken,
+
+            saveSession,
+
+            clearSession,
+
+            goToLogin,
+
+            loadAppInfo,
+
+
+            login:
+                (
+                    username,
+                    password
+                ) =>
+                    request(
+                        "login",
+                        {
+                            username,
+                            password
+                        }
+                    ),
+
+
+            validateSession:
+                token =>
+                    request(
+                        "validateSession",
+                        {
+                            token
+                        }
+                    ),
+
+
+            confirmAttendance:
+                (
+                    token,
+                    folio,
+                    method,
+                    requestId =
+                        createRequestId()
+                ) =>
+                    request(
+                        "confirmAttendance",
+                        {
+                            token,
+                            folio,
+                            method,
+                            requestId
+                        }
+                    ),
+
+
+            logout:
+                token =>
+                    request(
+                        "logout",
+                        {
+                            token
+                        }
+                    )
+
+        });
+
 
     async function initLogin() {
-        const form = document.getElementById("loginForm");
-        const button = document.getElementById("loginButton");
-        const message = document.getElementById("loginMessage");
-        const password = document.getElementById("password");
 
-        let busy = false;
+        const form =
+            document.getElementById(
+                "loginForm"
+            );
 
-        function setBusy(value) {
-            busy = value;
+        const button =
+            document.getElementById(
+                "loginButton"
+            );
 
-            for (const element of form.elements) {
-                element.disabled = value;
+        const message =
+            document.getElementById(
+                "loginMessage"
+            );
+
+        const password =
+            document.getElementById(
+                "password"
+            );
+
+
+        let busy =
+            false;
+
+
+        function setBusy(
+            value
+        ) {
+
+            busy =
+                value;
+
+
+            for (
+                const element
+                of form.elements
+            ) {
+
+                element.disabled =
+                    value;
+
             }
+
 
             button.textContent =
-                value ? "Verificando…" : "Iniciar sesión";
+                value
+                    ?
+                    "Verificando…"
+                    :
+                    "Iniciar sesión";
 
-            form.setAttribute("aria-busy", String(value));
+
+            form.setAttribute(
+                "aria-busy",
+                String(value)
+            );
+
         }
 
-        function showMessage(text, error = false) {
-            message.textContent = text;
-            message.classList.toggle("error", error);
+
+        function showMessage(
+            text,
+            error = false
+        ) {
+
+            message.textContent =
+                text;
+
+
+            message.classList.toggle(
+                "error",
+                error
+            );
+
         }
 
-        form.addEventListener("submit", async event => {
-            event.preventDefault();
 
-            if (busy) return;
+        form.addEventListener(
+            "submit",
+            async event => {
 
-            const username =
-                document.getElementById("username").value.trim();
+                event.preventDefault();
 
-            if (!username || !password.value) {
-                showMessage(
-                    "Ingresa tu usuario y contraseña.",
-                    true
-                );
-                return;
-            }
 
-            const passwordValue = password.value;
+                if (busy)
+                    return;
 
-            setBusy(true);
-            showMessage("");
 
-            try {
-                const result = await window.AttendanceAuth.login(
-                    username,
-                    passwordValue
-                );
+                const username =
+                    document
+                        .getElementById(
+                            "username"
+                        )
+                        .value
+                        .trim();
+
 
                 if (
-                    !result.success ||
-                    typeof result.token !== "string" ||
-                    !result.token ||
-                    result.role !== "ATTENDANCE"
+                    !username ||
+                    !password.value
                 ) {
+
                     showMessage(
-                        result.message ||
-                            "No se pudo iniciar sesión. Revisa tus credenciales.",
+                        "Ingresa tu usuario y contraseña.",
                         true
                     );
+
                     return;
+
                 }
+
+
+                const passwordValue =
+                    password.value;
+
+
+                setBusy(
+                    true
+                );
+
+
+                showMessage(
+                    ""
+                );
+
 
                 try {
-                    saveSession(result);
-                } catch {
+
+                    const result =
+                        await window
+                            .AttendanceAuth
+                            .login(
+                                username,
+                                passwordValue
+                            );
+
+
+                    if (
+                        !result.success ||
+                        typeof result.token !==
+                            "string" ||
+                        !result.token ||
+                        result.role !==
+                            "ATTENDANCE"
+                    ) {
+
+                        showMessage(
+                            result.message
+                            ||
+                            "No se pudo iniciar sesión. Revisa tus credenciales.",
+                            true
+                        );
+
+                        return;
+
+                    }
+
+
+                    try {
+
+                        saveSession(
+                            result
+                        );
+
+                    }
+                    catch {
+
+                        showMessage(
+                            "El navegador no permite guardar la sesión. Habilita el almacenamiento del sitio.",
+                            true
+                        );
+
+                        return;
+
+                    }
+
+
+                    window.location.replace(
+                        "scanner.html"
+                    );
+
+                }
+                catch (error) {
+
                     showMessage(
-                        "El navegador no permite guardar la sesión. Habilita el almacenamiento del sitio.",
+                        error.message,
                         true
                     );
-                    return;
+
+                }
+                finally {
+
+                    password.value =
+                        "";
+
+
+                    setBusy(
+                        false
+                    );
+
                 }
 
-                window.location.replace("scanner.html");
-            } catch (error) {
-                showMessage(error.message, true);
-            } finally {
-                password.value = "";
-                setBusy(false);
             }
-        });
+        );
+
 
         void loadAppInfo();
 
+
         if (
-            new URLSearchParams(window.location.search).has("expired")
+            new URLSearchParams(
+                window.location.search
+            ).has(
+                "expired"
+            )
         ) {
+
             showMessage(
                 "La sesión expiró. Inicia sesión nuevamente.",
                 true
             );
+
         }
 
+
         try {
-            const token = getToken();
 
-            if (!token) return;
+            const token =
+                getToken();
 
-            setBusy(true);
+
+            if (!token)
+                return;
+
+
+            setBusy(
+                true
+            );
+
 
             const result =
-                await window.AttendanceAuth.validateSession(token);
+                await window
+                    .AttendanceAuth
+                    .validateSession(
+                        token
+                    );
+
 
             if (
                 result.success &&
                 result.valid &&
-                result.role === "ATTENDANCE"
+                result.role ===
+                    "ATTENDANCE"
             ) {
+
                 saveSession({
+
                     ...result,
+
                     token
+
                 });
 
-                window.location.replace("scanner.html");
-            } else if (
-                result.valid === false ||
-                result.sessionExpired ||
-                result.code === "UNAUTHORIZED"
+
+                window.location.replace(
+                    "scanner.html"
+                );
+
+            }
+            else if (
+                result.valid ===
+                    false
+                ||
+                result.sessionExpired
+                ||
+                result.code ===
+                    "UNAUTHORIZED"
             ) {
+
                 clearSession();
-            } else {
+
+            }
+            else {
+
                 showMessage(
-                    result.message ||
-                        "No se pudo verificar la sesión. Puedes iniciar sesión nuevamente.",
+                    result.message
+                    ||
+                    "No se pudo verificar la sesión. Puedes iniciar sesión nuevamente.",
                     true
                 );
+
             }
-        } catch (error) {
-            showMessage(error.message, true);
-        } finally {
-            setBusy(false);
+
         }
+        catch (error) {
+
+            showMessage(
+                error.message,
+                true
+            );
+
+        }
+        finally {
+
+            setBusy(
+                false
+            );
+
+        }
+
     }
 
-    if (document.body.dataset.page === "login") {
+
+    if (
+        document.body.dataset.page ===
+            "login"
+    ) {
+
         void initLogin();
+
     }
+
 })();
