@@ -10,9 +10,7 @@
             window.crypto &&
             typeof window.crypto.randomUUID === "function"
         ) {
-
             return window.crypto.randomUUID();
-
         }
 
 
@@ -70,6 +68,14 @@
             );
 
 
+        /*
+         * El body se crea una sola vez.
+         *
+         * Esto es especialmente importante para
+         * confirmAttendance, porque todos los
+         * reintentos conservan exactamente el mismo
+         * requestId.
+         */
         const body =
             new URLSearchParams({
                 action,
@@ -88,12 +94,21 @@
 
 
         /*
-         * Solo reintentamos automáticamente
-         * operaciones que son seguras/idempotentes.
+         * Solo estas operaciones pueden reintentarse
+         * automáticamente.
          *
-         * confirmAttendance es seguro porque usa
-         * requestId y el backend devuelve el
-         * resultado original del primer intento.
+         * confirmAttendance es idempotente gracias
+         * al requestId almacenado en Apps Script.
+         *
+         * validateSession y appInfo son de lectura.
+         *
+         * logout también es idempotente: eliminar
+         * dos veces una sesión produce el mismo
+         * estado final.
+         *
+         * login NO se incluye porque un primer login
+         * cuya respuesta se haya perdido podría haber
+         * creado ya una sesión.
          */
         const retryableActions =
             new Set([
@@ -108,10 +123,8 @@
             retryableActions.has(
                 action
             )
-                ?
-                2
-                :
-                1;
+                ? 2
+                : 1;
 
 
         for (
@@ -218,6 +231,15 @@
                     "JSON";
 
 
+                /*
+                 * Si Google devuelve accidentalmente
+                 * una página HTML en lugar del JSON
+                 * de ContentService, esta operación
+                 * lanzará SyntaxError.
+                 *
+                 * Para acciones idempotentes ese
+                 * error puede reintentarse.
+                 */
                 const result =
                     await response.json();
 
@@ -286,26 +308,77 @@
 
 
                 /*
-                 * El 404 puede aparecer después
-                 * de que Apps Script haya ejecutado
-                 * correctamente la operación pero
-                 * falle la recuperación de la
-                 * respuesta de ContentService.
+                 * Fallos de transporte que pueden
+                 * ocurrir aunque Apps Script haya
+                 * ejecutado correctamente la acción.
+                 *
+                 * 404:
+                 * fallo observado en la redirección
+                 * de ContentService.
+                 *
+                 * SyntaxError:
+                 * Google devolvió HTML u otro contenido
+                 * en lugar del JSON esperado.
+                 *
+                 * TypeError:
+                 * normalmente un fallo de fetch/red.
+                 *
+                 * AbortError:
+                 * timeout local.
+                 *
+                 * INVALID_RESPONSE:
+                 * hubo respuesta, pero no cumple
+                 * el contrato esperado.
                  */
+                const retryableFailure =
+                    error.httpStatus === 404
+                    ||
+                    error.name === "SyntaxError"
+                    ||
+                    error.name === "TypeError"
+                    ||
+                    error.name === "AbortError"
+                    ||
+                    error.diagnosticCode ===
+                        "INVALID_RESPONSE";
+
+
                 if (
-                    error.httpStatus ===
-                        404
+                    retryableActions.has(
+                        action
+                    )
                     &&
-                    attempt <
-                        maxAttempts
+                    retryableFailure
+                    &&
+                    attempt < maxAttempts
                 ) {
+
+                    let reason;
+
+
+                    if (
+                        error.httpStatus
+                    ) {
+
+                        reason =
+                            `HTTP_${error.httpStatus}`;
+
+                    }
+                    else {
+
+                        reason =
+                            error.diagnosticCode
+                            ||
+                            error.name;
+
+                    }
+
 
                     console.info(
                         "[API reintento]",
                         {
                             action,
-                            reason:
-                                "HTTP_404",
+                            reason,
                             nextAttempt:
                                 attempt + 1
                         }
@@ -343,7 +416,7 @@
                 ) {
 
                     message =
-                        "Se recibió una respuesta que no es JSON válido.";
+                        "El servidor respondió con un formato inesperado.";
 
                 }
                 else if (
@@ -358,7 +431,7 @@
                 else {
 
                     message =
-                        "El navegador no pudo recibir la respuesta. Revisa la conexión y la petición en Red.";
+                        "El navegador no pudo recibir la respuesta. Revisa la conexión y vuelve a intentarlo.";
 
                 }
 
@@ -466,10 +539,8 @@
 
         window.location.replace(
             expired
-                ?
-                "index.html?expired=1"
-                :
-                "index.html"
+                ? "index.html?expired=1"
+                : "index.html"
         );
 
     }
@@ -527,7 +598,8 @@
 
             /*
              * appInfo no es crítico.
-             * Se conserva el título local.
+             * Si falla, se conserva el título
+             * definido localmente en config.js.
              */
 
         }
@@ -577,6 +649,14 @@
                     ),
 
 
+            /*
+             * requestId normalmente se genera aquí.
+             *
+             * scanner.js puede proporcionarlo
+             * explícitamente cuando necesita
+             * reintentar exactamente la misma
+             * operación.
+             */
             confirmAttendance:
                 (
                     token,
@@ -615,15 +695,18 @@
                 "loginForm"
             );
 
+
         const button =
             document.getElementById(
                 "loginButton"
             );
 
+
         const message =
             document.getElementById(
                 "loginMessage"
             );
+
 
         const password =
             document.getElementById(
@@ -656,10 +739,8 @@
 
             button.textContent =
                 value
-                    ?
-                    "Verificando…"
-                    :
-                    "Iniciar sesión";
+                    ? "Verificando…"
+                    : "Iniciar sesión";
 
 
             form.setAttribute(
@@ -880,8 +961,7 @@
 
             }
             else if (
-                result.valid ===
-                    false
+                result.valid === false
                 ||
                 result.sessionExpired
                 ||
