@@ -22,14 +22,33 @@
         }
 
         try {
+            const startedAt = Date.now();
+            console.info("[API envío]", {
+                action,
+                method
+            });
             const response = await fetch(url, options);
             if (!response.ok) throw new Error("HTTP_ERROR");
-            const result = await response.json();
+             const result = await response.json();
+            console.info("[API respuesta]", {
+                action,
+                milliseconds: Date.now() - startedAt,
+                httpStatus: response.status,
+                success: result?.success,
+                code: result?.code,
+                message: result?.message
+            });
             if (!result || typeof result.success !== "boolean") {
                 throw new Error("INVALID_RESPONSE");
             }
             return result;
         } catch (error) {
+            console.warn("[API fallo]", {
+            action,
+            milliseconds: Date.now() - startedAt,
+            errorType: error.name,
+            message: error.message
+            });
             if (error.name === "AbortError") {
                 throw new Error("La solicitud tardó demasiado. No se pudo obtener la respuesta.");
             }
