@@ -6,16 +6,69 @@
         window.AttendanceAuth;
 
 
+    const config =
+        window.AttendanceConfig
+        ||
+        {};
+
+
     const FOLIO_PREFIX =
         "RAPC-";
 
 
+    /*
+     * Una operación permanece en memoria local
+     * durante 30 segundos desde que se inicia.
+     */
     const OPERATION_MEMORY_MS =
         30000;
 
 
+    /*
+     * Asistencia:
+     *
+     * solicitud inicial
+     * +
+     * una recuperación automática
+     */
     const AUTOMATIC_ATTEMPTS =
         2;
+
+
+    /*
+     * Si el servidor tarda más de este tiempo,
+     * mostramos un mensaje neutro al operador.
+     */
+    const SLOW_NOTICE_MS =
+        4000;
+
+
+    /*
+     * El timeout de cada solicitud de asistencia
+     * debe ser suficientemente corto para que
+     * ambos envíos quepan dentro de los 30 s
+     * de memoria local.
+     *
+     * Puede sobrescribirse desde config.js:
+     *
+     * ATTENDANCE_REQUEST_TIMEOUT_MS: 10000
+     */
+    const ATTENDANCE_REQUEST_TIMEOUT_MS =
+        Number.isFinite(
+            Number(
+                config.ATTENDANCE_REQUEST_TIMEOUT_MS
+            )
+        )
+        &&
+        Number(
+            config.ATTENDANCE_REQUEST_TIMEOUT_MS
+        ) > 0
+            ?
+            Number(
+                config.ATTENDANCE_REQUEST_TIMEOUT_MS
+            )
+            :
+            10000;
 
 
 
@@ -118,11 +171,15 @@
 
 
     /*
-     * Memoria RAM de operaciones.
+     * Memoria temporal exclusivamente local.
      *
-     * No usa localStorage.
-     * No usa sessionStorage.
-     * No envía identificadores al servidor.
+     * No usa:
+     *
+     * - localStorage
+     * - sessionStorage
+     * - PropertiesService
+     *
+     * Desaparece al recargar la página.
      */
     const operationMemory =
         new Map();
@@ -133,8 +190,9 @@
 
 
     /*
-     * Solo se utiliza cuando ambos intentos
-     * terminaron sin una respuesta utilizable.
+     * Guarda la operación únicamente cuando
+     * necesitamos ofrecer el botón
+     * "Repetir operación".
      */
     let retryOperation =
         null;
@@ -311,8 +369,8 @@
 
 
         /*
-         * Eliminación física de la memoria
-         * una vez pasados los 30 segundos.
+         * La operación se elimina físicamente
+         * después de los 30 segundos.
          */
         setTimeout(
             () => {
@@ -337,7 +395,7 @@
             },
             OPERATION_MEMORY_MS
             +
-            50
+            100
         );
 
 
@@ -423,18 +481,13 @@
     ) {
 
         /*
-         * Caso fundamental:
+         * Si recientemente enviamos esta operación,
+         * hubo un problema de comunicación y ahora
+         * el servidor responde ALREADY_CONFIRMED,
+         * tratamos el estado final como éxito.
          *
-         * intento 1:
-         * servidor registra
-         * pero respuesta se pierde
-         *
-         * intento 2:
-         * servidor responde ALREADY_CONFIRMED
-         *
-         * Como conocemos el contexto local,
-         * lo interpretamos como una confirmación
-         * exitosa de la operación actual.
+         * No afirmamos cuál de las solicitudes
+         * realizó físicamente la escritura.
          */
         if (
             result
@@ -474,7 +527,7 @@
 
 
     /* =========================================================
-       CÁMARA
+       COLA DE CÁMARA
        ========================================================= */
 
     function queueCamera(
@@ -514,6 +567,240 @@
 
 
 
+    /* =========================================================
+       GUÍAS DEL LECTOR QR
+       ========================================================= */
+
+    /*
+     * html5-qrcode crea internamente:
+     *
+     * #qr-shaded-region
+     *
+     * y dentro de él coloca cuatro barras que
+     * forman su guía original.
+     *
+     * Esas barras son las que html5-qrcode
+     * cambia a verde al reconocer un QR.
+     *
+     * Nosotros las ocultamos SOLO después de
+     * detectar correctamente un código para
+     * dejar visible nuestra guía personalizada.
+     */
+    function getNativeQrGuideElements() {
+
+        const shadedRegion =
+            document.getElementById(
+                "qr-shaded-region"
+            );
+
+
+        if (!shadedRegion) {
+
+            return [];
+
+        }
+
+
+        return Array
+            .from(
+                shadedRegion.children
+            )
+            .filter(
+                element =>
+                    element instanceof
+                        HTMLElement
+            );
+
+    }
+
+
+
+    function hideNativeQrGuide() {
+
+        getNativeQrGuideElements()
+            .forEach(
+                element => {
+
+                    /*
+                     * Usamos visibility en lugar
+                     * de display para no modificar
+                     * la geometría del lector.
+                     */
+                    element.style.visibility =
+                        "hidden";
+
+                }
+            );
+
+    }
+
+
+
+    function restoreNativeQrGuide() {
+
+        getNativeQrGuideElements()
+            .forEach(
+                element => {
+
+                    element.style.visibility =
+                        "";
+
+                }
+            );
+
+    }
+
+
+
+    function calculateQrGuideSize() {
+
+        /*
+         * Intentamos obtener el tamaño REAL
+         * del hueco de lectura de html5-qrcode.
+         */
+        const shadedRegion =
+            document.getElementById(
+                "qr-shaded-region"
+            );
+
+
+        if (
+            shadedRegion
+        ) {
+
+            const rect =
+                shadedRegion
+                    .getBoundingClientRect();
+
+
+            const style =
+                window.getComputedStyle(
+                    shadedRegion
+                );
+
+
+            const borderLeft =
+                parseFloat(
+                    style.borderLeftWidth
+                )
+                ||
+                0;
+
+
+            const borderRight =
+                parseFloat(
+                    style.borderRightWidth
+                )
+                ||
+                0;
+
+
+            const borderTop =
+                parseFloat(
+                    style.borderTopWidth
+                )
+                ||
+                0;
+
+
+            const borderBottom =
+                parseFloat(
+                    style.borderBottomWidth
+                )
+                ||
+                0;
+
+
+            const scanWidth =
+                rect.width
+                -
+                borderLeft
+                -
+                borderRight;
+
+
+            const scanHeight =
+                rect.height
+                -
+                borderTop
+                -
+                borderBottom;
+
+
+            const size =
+                Math.min(
+                    scanWidth,
+                    scanHeight
+                );
+
+
+            if (
+                Number.isFinite(
+                    size
+                )
+                &&
+                size > 0
+            ) {
+
+                return Math.floor(
+                    size
+                );
+
+            }
+
+        }
+
+
+
+        /*
+         * Fallback por si la estructura interna
+         * todavía no está disponible.
+         */
+        const reader =
+            byId(
+                "reader"
+            );
+
+
+        if (!reader) {
+
+            return 0;
+
+        }
+
+
+        const width =
+            reader.clientWidth;
+
+
+        const height =
+            reader.clientHeight;
+
+
+        if (
+            width <= 0
+            ||
+            height <= 0
+        ) {
+
+            return 0;
+
+        }
+
+
+        return Math.floor(
+            Math.min(
+                width,
+                height
+            )
+            *
+            0.75
+        );
+
+    }
+
+
+
     function markQrAsRead() {
 
         const reader =
@@ -529,35 +816,13 @@
         }
 
 
-        /*
-         * Igualamos aproximadamente el tamaño
-         * de las guías al qrbox configurado
-         * en html5-qrcode.
-         */
-        const width =
-            reader.clientWidth;
-
-
-        const height =
-            reader.clientHeight;
+        const size =
+            calculateQrGuideSize();
 
 
         if (
-            width > 0
-            &&
-            height > 0
+            size > 0
         ) {
-
-            const size =
-                Math.floor(
-                    Math.min(
-                        width,
-                        height
-                    )
-                    *
-                    0.75
-                );
-
 
             reader.style.setProperty(
                 "--qr-guide-size",
@@ -568,8 +833,16 @@
 
 
         /*
-         * Reinicia la pequeña animación si
-         * fuera necesario.
+         * Fundamental:
+         *
+         * ocultamos la guía nativa que se acaba
+         * de volver verde.
+         */
+        hideNativeQrGuide();
+
+
+        /*
+         * Reiniciamos nuestra animación.
          */
         reader.classList.remove(
             "qr-read-ok"
@@ -579,6 +852,13 @@
         void reader.offsetWidth;
 
 
+        /*
+         * Esto activa:
+         *
+         * #reader.qr-read-ok::after
+         *
+         * de styles.css.
+         */
         reader.classList.add(
             "qr-read-ok"
         );
@@ -593,6 +873,13 @@
             byId(
                 "reader"
             );
+
+
+        /*
+         * Antes de volver a escanear recuperamos
+         * la guía blanca original.
+         */
+        restoreNativeQrGuide();
 
 
         if (!reader) {
@@ -615,6 +902,10 @@
 
 
 
+    /* =========================================================
+       CONTROL DE CÁMARA
+       ========================================================= */
+
     function pauseCamera() {
 
         if (
@@ -626,10 +917,10 @@
         ) {
 
             /*
-             * true indica a html5-qrcode que
-             * también pause el video.
+             * true:
              *
-             * Así queda visible el último frame.
+             * congela también el video y conserva
+             * visible el último frame leído.
              */
             scanner.pause(
                 true
@@ -714,6 +1005,10 @@
 
 
 
+    /* =========================================================
+       QR DETECTADO
+       ========================================================= */
+
     function onQrRead(
         text
     ) {
@@ -751,8 +1046,8 @@
 
 
         /*
-         * Se bloquea inmediatamente para impedir
-         * lecturas repetidas del mismo frame.
+         * Impide múltiples callbacks del mismo
+         * QR mientras se procesa.
          */
         scanLocked =
             true;
@@ -764,16 +1059,17 @@
 
 
         /*
-         * Feedback visual inmediato:
-         *
-         * 1. guías verdes
-         * 2. último frame congelado
-         * 3. texto de confirmación
+         * Primero congelamos el video.
+         */
+        pauseCamera();
+
+
+        /*
+         * Después ocultamos la guía verde
+         * original y activamos únicamente
+         * nuestra guía personalizada.
          */
         markQrAsRead();
-
-
-        pauseCamera();
 
 
         cameraMessage.textContent =
@@ -788,11 +1084,10 @@
 
 
         /*
-         * IMPORTANTE:
+         * La cámara NO se detiene aquí.
          *
-         * Ya NO detenemos la cámara aquí.
-         * El frame permanece congelado mientras
-         * esperamos al servidor.
+         * El último frame sigue visible hasta
+         * obtener un resultado.
          */
         void submitAttendance(
             folio,
@@ -802,6 +1097,10 @@
     }
 
 
+
+    /* =========================================================
+       INICIAR CÁMARA
+       ========================================================= */
 
     async function startCamera() {
 
@@ -859,6 +1158,10 @@
             false;
 
 
+        /*
+         * Elimina nuestra guía verde y devuelve
+         * la guía nativa a su estado normal.
+         */
         clearQrReadState();
 
 
@@ -892,6 +1195,14 @@
                 Html5QrcodeScannerState
                     .PAUSED
             ) {
+
+                /*
+                 * Antes de reanudar nos aseguramos
+                 * de que no quede oculta la guía
+                 * nativa.
+                 */
+                clearQrReadState();
+
 
                 scanner.resume();
 
@@ -1013,7 +1324,7 @@
 
 
     /* =========================================================
-       VISTAS
+       VISTA DE CAPTURA
        ========================================================= */
 
     function showCapture() {
@@ -1063,6 +1374,10 @@
 
 
 
+    /* =========================================================
+       RESULTADO
+       ========================================================= */
+
     function showResult(
         result,
         submittedFolio,
@@ -1080,11 +1395,9 @@
 
 
         /*
-         * Ahora sí dejamos de utilizar
-         * físicamente la cámara.
-         *
-         * Hasta este momento el frame QR
-         * permaneció congelado y visible.
+         * El frame dejó de ser necesario.
+         * Ahora sí apagamos físicamente
+         * la cámara.
          */
         void queueCamera(
             stopCamera
@@ -1130,7 +1443,10 @@
                 "Método no válido",
 
             BUSY:
-                "Sistema ocupado"
+                "Sistema ocupado",
+
+            CONNECTION_ERROR:
+                "Problema de conexión"
 
         };
 
@@ -1213,20 +1529,24 @@
                 "resultMessage"
             )
                 .textContent =
-                "No se pudo recibir una respuesta del servidor después de dos intentos. "
+                "No se pudo completar la conexión con el servidor. "
                 +
-                "La asistencia pudo haberse registrado. Puedes repetir la operación.";
+                "La asistencia podría haberse registrado. Puedes repetir la operación.";
 
         }
         else if (
             recovered
         ) {
 
+            /*
+             * No exponemos al operador los detalles
+             * internos de recuperación.
+             */
             byId(
                 "resultMessage"
             )
                 .textContent =
-                "La asistencia está confirmada. La respuesta de un intento anterior no se recibió correctamente.";
+                "La asistencia está confirmada.";
 
         }
         else {
@@ -1407,7 +1727,7 @@
 
 
     /* =========================================================
-       RESPUESTAS DEL SERVIDOR
+       AUTORIZACIÓN
        ========================================================= */
 
     function isUnauthorized(
@@ -1425,19 +1745,103 @@
 
 
 
-    function handleUnauthorized() {
+    async function handleUnauthorized() {
 
         leaving =
             true;
 
 
-        void queueCamera(
+        await queueCamera(
             stopCamera
         );
 
 
         auth.goToLogin(
             true
+        );
+
+    }
+
+
+
+    /* =========================================================
+       MENSAJE DE SERVIDOR LENTO
+       ========================================================= */
+
+    function showSlowAttendanceMessage(
+        method
+    ) {
+
+        if (
+            !capturePanel.hidden
+        ) {
+
+            cameraMessage.textContent =
+                method ===
+                    "QR"
+                    ?
+                    "El servidor está tardando más de lo normal. Estamos confirmando la asistencia…"
+                    :
+                    "El servidor está tardando más de lo normal. Estamos procesando la asistencia…";
+
+        }
+        else {
+
+            byId(
+                "resultMessage"
+            )
+                .textContent =
+                "El servidor está tardando más de lo normal. Estamos verificando la asistencia…";
+
+        }
+
+    }
+
+
+
+    /* =========================================================
+       UNA SOLICITUD DE ASISTENCIA
+       ========================================================= */
+
+    async function sendAttendanceRequest(
+        folio,
+        method
+    ) {
+
+        /*
+         * Usamos request() directamente porque
+         * necesitamos un timeout específico para
+         * asistencia.
+         *
+         * maxAttempts = 1:
+         *
+         * auth.js NO hace ninguna recuperación
+         * interna para esta operación.
+         *
+         * scanner.js conserva todo el contexto.
+         */
+        return auth.request(
+
+            "confirmAttendance",
+
+            {
+                token,
+
+                folio,
+
+                method
+            },
+
+            "POST",
+
+            {
+                timeoutMs:
+                    ATTENDANCE_REQUEST_TIMEOUT_MS,
+
+                maxAttempts:
+                    1
+            }
+
         );
 
     }
@@ -1495,11 +1899,11 @@
 
 
         /*
-         * En un escaneo/registro nuevo siempre
-         * se crea una operación nueva.
+         * Si estamos repitiendo manualmente una
+         * operación todavía vigente, reutilizamos
+         * su memoria.
          *
-         * Solo "Repetir operación" proporciona
-         * existingOperationKey.
+         * Si expiró, comienza una operación nueva.
          */
         let operation =
             getAttendanceOperation(
@@ -1552,7 +1956,7 @@
                 "resultMessage"
             )
                 .textContent =
-                "Repitiendo operación…";
+                "Verificando asistencia…";
 
         }
 
@@ -1562,22 +1966,47 @@
 
             for (
                 let attempt = 1;
-                attempt <= AUTOMATIC_ATTEMPTS;
+                attempt <=
+                    AUTOMATIC_ATTEMPTS;
                 attempt++
             ) {
 
                 operation.attempts++;
 
 
+
+                /*
+                 * Aunque fetch todavía siga
+                 * esperando, después de unos
+                 * segundos comunicamos simplemente
+                 * que el servidor está tardando.
+                 */
+                const slowNoticeTimer =
+                    setTimeout(
+                        () => {
+
+                            showSlowAttendanceMessage(
+                                normalizedMethod
+                            );
+
+                        },
+                        SLOW_NOTICE_MS
+                    );
+
+
+
                 try {
 
                     const result =
-                        await auth
-                            .confirmAttendance(
-                                token,
-                                normalizedFolio,
-                                normalizedMethod
-                            );
+                        await sendAttendanceRequest(
+                            normalizedFolio,
+                            normalizedMethod
+                        );
+
+
+                    clearTimeout(
+                        slowNoticeTimer
+                    );
 
 
 
@@ -1587,7 +2016,7 @@
                         )
                     ) {
 
-                        handleUnauthorized();
+                        await handleUnauthorized();
 
 
                         return;
@@ -1618,13 +2047,18 @@
                 }
                 catch (error) {
 
+                    clearTimeout(
+                        slowNoticeTimer
+                    );
+
+
                     /*
-                     * Llegar aquí significa que no
-                     * obtuvimos una respuesta HTTP/JSON
-                     * utilizable.
+                     * Para la lógica interna sí
+                     * necesitamos recordar que no
+                     * pudimos conocer el resultado.
                      *
-                     * NO significa que Apps Script
-                     * necesariamente haya fallado.
+                     * Este detalle nunca se muestra
+                     * al operador.
                      */
                     markOperationFailure(
                         operation,
@@ -1638,23 +2072,18 @@
                         AUTOMATIC_ATTEMPTS
                     ) {
 
-                        if (
-                            !capturePanel.hidden
-                        ) {
-
-                            cameraMessage.textContent =
-                                "Respuesta no recibida. Reintentando confirmación…";
-
-                        }
-                        else {
-
-                            byId(
-                                "resultMessage"
-                            )
-                                .textContent =
-                                "Respuesta no recibida. Reintentando operación…";
-
-                        }
+                        /*
+                         * Recuperación automática.
+                         *
+                         * No decimos:
+                         *
+                         * - "reintento"
+                         * - "respuesta perdida"
+                         * - "segundo intento"
+                         */
+                        showSlowAttendanceMessage(
+                            normalizedMethod
+                        );
 
 
                         continue;
@@ -1664,10 +2093,8 @@
 
 
                     /*
-                     * También falló el segundo intento.
-                     *
-                     * Mostramos el error y permitimos
-                     * al operador repetir manualmente.
+                     * No pudimos obtener un estado
+                     * concluyente.
                      */
                     showResult(
 
@@ -1679,7 +2106,7 @@
                                 "CONNECTION_ERROR",
 
                             message:
-                                error.message
+                                "No se pudo completar la conexión con el servidor."
                         },
 
                         normalizedFolio,
@@ -1717,7 +2144,7 @@
 
 
     /* =========================================================
-       SESIÓN
+       VERIFICACIÓN DE SESIÓN
        ========================================================= */
 
     async function verifySession() {
@@ -1755,7 +2182,16 @@
             const result =
                 await auth
                     .validateSession(
-                        token
+                        token,
+                        () => {
+
+                            byId(
+                                "sessionMessage"
+                            )
+                                .textContent =
+                                "El servidor está tardando más de lo normal…";
+
+                        }
                     );
 
 
@@ -1874,6 +2310,11 @@
                 true;
 
 
+            /*
+             * Si el usuario comienza a escribir,
+             * quitamos cualquier estado visual de
+             * lectura QR.
+             */
             clearQrReadState();
 
 
@@ -2025,7 +2466,7 @@
 
 
     /* =========================================================
-       SIGUIENTE / REINTENTO MANUAL
+       SIGUIENTE / REPETIR OPERACIÓN
        ========================================================= */
 
     nextButton.addEventListener(
@@ -2124,7 +2565,16 @@
                     await auth.logout(
                         token
                         ||
-                        auth.getToken()
+                        auth.getToken(),
+                        () => {
+
+                            byId(
+                                "globalMessage"
+                            )
+                                .textContent =
+                                "El servidor está tardando más de lo normal…";
+
+                        }
                     );
 
 
@@ -2272,7 +2722,13 @@
 
         }
     );
-    
+
+
+
+    /* =========================================================
+       INICIALIZACIÓN
+       ========================================================= */
+
     void auth.loadAppInfo();
 
 
