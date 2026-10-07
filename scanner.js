@@ -1,6 +1,7 @@
 (() => {
     "use strict";
 
+
     const auth =
         window.AttendanceAuth;
 
@@ -9,40 +10,82 @@
         "RAPC-";
 
 
+    const OPERATION_MEMORY_MS =
+        30000;
+
+
+    const AUTOMATIC_ATTEMPTS =
+        2;
+
+
+
     const byId =
         id =>
-            document.getElementById(id);
+            document.getElementById(
+                id
+            );
+
 
 
     const sessionPanel =
-        byId("sessionPanel");
+        byId(
+            "sessionPanel"
+        );
+
 
     const capturePanel =
-        byId("capturePanel");
+        byId(
+            "capturePanel"
+        );
+
 
     const resultPanel =
-        byId("resultPanel");
+        byId(
+            "resultPanel"
+        );
+
 
     const form =
-        byId("attendanceForm");
+        byId(
+            "attendanceForm"
+        );
+
 
     const folioInput =
-        byId("folio");
+        byId(
+            "folio"
+        );
+
 
     const confirmButton =
-        byId("confirmButton");
+        byId(
+            "confirmButton"
+        );
+
 
     const cameraButton =
-        byId("cameraButton");
+        byId(
+            "cameraButton"
+        );
+
 
     const cameraMessage =
-        byId("cameraMessage");
+        byId(
+            "cameraMessage"
+        );
+
 
     const logoutButton =
-        byId("logoutButton");
+        byId(
+            "logoutButton"
+        );
+
 
     const nextButton =
-        byId("nextButton");
+        byId(
+            "nextButton"
+        );
+
 
 
     let scanner =
@@ -73,23 +116,34 @@
         false;
 
 
+
     /*
-     * Estos valores se utilizan únicamente
-     * cuando la respuesta del servidor se pierde
-     * incluso después del reintento automático
-     * realizado por auth.js.
+     * Memoria RAM de operaciones.
+     *
+     * No usa localStorage.
+     * No usa sessionStorage.
+     * No envía identificadores al servidor.
      */
-    let retryFolio =
-        "";
+    const operationMemory =
+        new Map();
 
 
-    let retryMethod =
-        "MANUAL";
+    let operationSequence =
+        0;
 
 
-    let retryRequestId =
-        "";
+    /*
+     * Solo se utiliza cuando ambos intentos
+     * terminaron sin una respuesta utilizable.
+     */
+    let retryOperation =
+        null;
 
+
+
+    /* =========================================================
+       FOLIOS
+       ========================================================= */
 
     function normalizeFolioSuffix(
         value
@@ -103,10 +157,6 @@
                 .toUpperCase();
 
 
-        /*
-         * Permite pegar accidentalmente el folio
-         * completo, por ejemplo RAPC-P9W4.
-         */
         if (
             text.startsWith(
                 FOLIO_PREFIX
@@ -132,6 +182,7 @@
             );
 
     }
+
 
 
     function buildManualFolio() {
@@ -161,6 +212,7 @@
     }
 
 
+
     function setVisibleFolio(
         fullFolio
     ) {
@@ -187,6 +239,244 @@
     }
 
 
+
+    /* =========================================================
+       MEMORIA LOCAL DE OPERACIONES
+       ========================================================= */
+
+    function createOperationKey() {
+
+        operationSequence++;
+
+
+        return (
+            "ATTENDANCE:"
+            +
+            Date.now()
+            +
+            ":"
+            +
+            operationSequence
+        );
+
+    }
+
+
+
+    function createAttendanceOperation(
+        folio,
+        method
+    ) {
+
+        const now =
+            Date.now();
+
+
+        const operation = {
+
+            key:
+                createOperationKey(),
+
+            type:
+                "ATTENDANCE",
+
+            folio,
+
+            method,
+
+            createdAt:
+                now,
+
+            expiresAt:
+                now
+                +
+                OPERATION_MEMORY_MS,
+
+            attempts:
+                0,
+
+            lostResponse:
+                false,
+
+            lastError:
+                ""
+
+        };
+
+
+        operationMemory.set(
+            operation.key,
+            operation
+        );
+
+
+        /*
+         * Eliminación física de la memoria
+         * una vez pasados los 30 segundos.
+         */
+        setTimeout(
+            () => {
+
+                const current =
+                    operationMemory.get(
+                        operation.key
+                    );
+
+
+                if (
+                    current ===
+                    operation
+                ) {
+
+                    operationMemory.delete(
+                        operation.key
+                    );
+
+                }
+
+            },
+            OPERATION_MEMORY_MS
+            +
+            50
+        );
+
+
+        return operation;
+
+    }
+
+
+
+    function getAttendanceOperation(
+        key
+    ) {
+
+        if (!key) {
+
+            return null;
+
+        }
+
+
+        const operation =
+            operationMemory.get(
+                key
+            );
+
+
+        if (!operation) {
+
+            return null;
+
+        }
+
+
+        if (
+            Date.now() >=
+            operation.expiresAt
+        ) {
+
+            operationMemory.delete(
+                key
+            );
+
+
+            return null;
+
+        }
+
+
+        return operation;
+
+    }
+
+
+
+    function markOperationFailure(
+        operation,
+        error
+    ) {
+
+        if (!operation) {
+
+            return;
+
+        }
+
+
+        operation.lostResponse =
+            true;
+
+
+        operation.lastError =
+            error?.message
+            ||
+            "";
+
+    }
+
+
+
+    function interpretAttendanceResponse(
+        result,
+        operation
+    ) {
+
+        /*
+         * Caso fundamental:
+         *
+         * intento 1:
+         * servidor registra
+         * pero respuesta se pierde
+         *
+         * intento 2:
+         * servidor responde ALREADY_CONFIRMED
+         *
+         * Como conocemos el contexto local,
+         * lo interpretamos como una confirmación
+         * exitosa de la operación actual.
+         */
+        if (
+            result
+            &&
+            result.success
+            &&
+            result.code ===
+                "ALREADY_CONFIRMED"
+            &&
+            operation
+            &&
+            operation.lostResponse
+            &&
+            Date.now() <
+                operation.expiresAt
+        ) {
+
+            return {
+
+                ...result,
+
+                code:
+                    "CONFIRMED_RECOVERED",
+
+                message:
+                    "La asistencia está confirmada."
+
+            };
+
+        }
+
+
+        return result;
+
+    }
+
+
+
+    /* =========================================================
+       CÁMARA
+       ========================================================= */
+
     function queueCamera(
         operation
     ) {
@@ -211,6 +501,7 @@
     }
 
 
+
     function cameraState() {
 
         return scanner
@@ -222,15 +513,124 @@
     }
 
 
+
+    function markQrAsRead() {
+
+        const reader =
+            byId(
+                "reader"
+            );
+
+
+        if (!reader) {
+
+            return;
+
+        }
+
+
+        /*
+         * Igualamos aproximadamente el tamaño
+         * de las guías al qrbox configurado
+         * en html5-qrcode.
+         */
+        const width =
+            reader.clientWidth;
+
+
+        const height =
+            reader.clientHeight;
+
+
+        if (
+            width > 0
+            &&
+            height > 0
+        ) {
+
+            const size =
+                Math.floor(
+                    Math.min(
+                        width,
+                        height
+                    )
+                    *
+                    0.75
+                );
+
+
+            reader.style.setProperty(
+                "--qr-guide-size",
+                `${size}px`
+            );
+
+        }
+
+
+        /*
+         * Reinicia la pequeña animación si
+         * fuera necesario.
+         */
+        reader.classList.remove(
+            "qr-read-ok"
+        );
+
+
+        void reader.offsetWidth;
+
+
+        reader.classList.add(
+            "qr-read-ok"
+        );
+
+    }
+
+
+
+    function clearQrReadState() {
+
+        const reader =
+            byId(
+                "reader"
+            );
+
+
+        if (!reader) {
+
+            return;
+
+        }
+
+
+        reader.classList.remove(
+            "qr-read-ok"
+        );
+
+
+        reader.style.removeProperty(
+            "--qr-guide-size"
+        );
+
+    }
+
+
+
     function pauseCamera() {
 
         if (
             scanner
             &&
             cameraState() ===
-                Html5QrcodeScannerState.SCANNING
+                Html5QrcodeScannerState
+                    .SCANNING
         ) {
 
+            /*
+             * true indica a html5-qrcode que
+             * también pause el video.
+             *
+             * Así queda visible el último frame.
+             */
             scanner.pause(
                 true
             );
@@ -244,10 +644,14 @@
     }
 
 
+
     async function stopCamera() {
 
-        if (!scanner)
+        if (!scanner) {
+
             return;
+
+        }
 
 
         const state =
@@ -256,10 +660,12 @@
 
         if (
             state ===
-                Html5QrcodeScannerState.SCANNING
+                Html5QrcodeScannerState
+                    .SCANNING
             ||
             state ===
-                Html5QrcodeScannerState.PAUSED
+                Html5QrcodeScannerState
+                    .PAUSED
         ) {
 
             try {
@@ -291,7 +697,9 @@
                     null;
 
 
-                byId("reader")
+                byId(
+                    "reader"
+                )
                     .replaceChildren();
 
             }
@@ -303,6 +711,7 @@
             "Activar cámara";
 
     }
+
 
 
     function onQrRead(
@@ -334,14 +743,16 @@
                 .toUpperCase();
 
 
-        if (!folio)
+        if (!folio) {
+
             return;
+
+        }
 
 
         /*
-         * Se bloquea inmediatamente para evitar que
-         * html5-qrcode entregue varias veces el mismo
-         * QR mientras se procesa.
+         * Se bloquea inmediatamente para impedir
+         * lecturas repetidas del mismo frame.
          */
         scanLocked =
             true;
@@ -352,21 +763,36 @@
         );
 
 
+        /*
+         * Feedback visual inmediato:
+         *
+         * 1. guías verdes
+         * 2. último frame congelado
+         * 3. texto de confirmación
+         */
+        markQrAsRead();
+
+
         pauseCamera();
 
 
         cameraMessage.textContent =
-            "QR detectado. Confirmando asistencia…";
+            "QR leído correctamente. Confirmando asistencia…";
 
 
-        byId("folioHelp")
+        byId(
+            "folioHelp"
+        )
             .textContent =
-            "QR detectado. La asistencia se está confirmando automáticamente.";
+            "QR leído correctamente. La asistencia se está confirmando automáticamente.";
 
 
         /*
-         * La lectura QR se envía inmediatamente.
-         * No requiere pulsar Confirmar asistencia.
+         * IMPORTANTE:
+         *
+         * Ya NO detenemos la cámara aquí.
+         * El frame permanece congelado mientras
+         * esperamos al servidor.
          */
         void submitAttendance(
             folio,
@@ -374,6 +800,7 @@
         );
 
     }
+
 
 
     async function startCamera() {
@@ -402,6 +829,7 @@
             cameraMessage.textContent =
                 "El lector QR no está disponible. Puedes ingresar el folio manualmente.";
 
+
             return;
 
         }
@@ -417,6 +845,7 @@
             cameraMessage.textContent =
                 "La cámara necesita HTTPS y un navegador compatible. Puedes ingresar el folio manualmente.";
 
+
             return;
 
         }
@@ -428,6 +857,9 @@
 
         scanLocked =
             false;
+
+
+        clearQrReadState();
 
 
         cameraMessage.textContent =
@@ -457,7 +889,8 @@
 
             if (
                 cameraState() ===
-                Html5QrcodeScannerState.PAUSED
+                Html5QrcodeScannerState
+                    .PAUSED
             ) {
 
                 scanner.resume();
@@ -465,7 +898,8 @@
             }
             else if (
                 cameraState() !==
-                Html5QrcodeScannerState.SCANNING
+                Html5QrcodeScannerState
+                    .SCANNING
             ) {
 
                 await scanner.start(
@@ -530,6 +964,7 @@
 
                 await stopCamera();
 
+
                 return;
 
             }
@@ -576,6 +1011,11 @@
     }
 
 
+
+    /* =========================================================
+       VISTAS
+       ========================================================= */
+
     function showCapture() {
 
         resultPanel.hidden =
@@ -594,24 +1034,23 @@
             false;
 
 
-        retryFolio =
-            "";
+        retryOperation =
+            null;
 
 
-        retryMethod =
-            "MANUAL";
+        clearQrReadState();
 
 
-        retryRequestId =
-            "";
-
-
-        byId("folioHelp")
+        byId(
+            "folioHelp"
+        )
             .textContent =
             "Escanea el QR o ingresa los 4 caracteres finales del folio.";
 
 
-        byId("globalMessage")
+        byId(
+            "globalMessage"
+        )
             .textContent =
             "";
 
@@ -623,12 +1062,13 @@
     }
 
 
+
     function showResult(
         result,
         submittedFolio,
         uncertain = false,
         submittedMethod = "MANUAL",
-        requestId = ""
+        operationKey = ""
     ) {
 
         capturePanel.hidden =
@@ -639,16 +1079,35 @@
             false;
 
 
+        /*
+         * Ahora sí dejamos de utilizar
+         * físicamente la cámara.
+         *
+         * Hasta este momento el frame QR
+         * permaneció congelado y visible.
+         */
         void queueCamera(
             stopCamera
         );
 
 
-        const confirmed =
+
+        const recovered =
             result.success
             &&
             result.code ===
-                "CONFIRMED";
+                "CONFIRMED_RECOVERED";
+
+
+        const confirmed =
+            result.success
+            &&
+            (
+                result.code ===
+                    "CONFIRMED"
+                ||
+                recovered
+            );
 
 
         const already =
@@ -656,6 +1115,7 @@
             &&
             result.code ===
                 "ALREADY_CONFIRMED";
+
 
 
         const titles = {
@@ -669,16 +1129,11 @@
             INVALID_METHOD:
                 "Método no válido",
 
-            INVALID_REQUEST_ID:
-                "Solicitud no válida",
-
-            REQUEST_ID_REUSED:
-                "Solicitud no válida",
-
             BUSY:
                 "Sistema ocupado"
 
         };
+
 
 
         resultPanel.className =
@@ -697,68 +1152,105 @@
             }`;
 
 
-        byId("resultBadge")
+
+        byId(
+            "resultBadge"
+        )
             .textContent =
-            confirmed
+            recovered
                 ?
-                "Entrada registrada"
+                "Entrada confirmada"
                 :
-                already
+                confirmed
                     ?
-                    "Registro previo"
+                    "Entrada registrada"
                     :
-                    uncertain
+                    already
                         ?
-                        "Resultado pendiente"
+                        "Registro previo"
                         :
-                        "Registro no confirmado";
+                        uncertain
+                            ?
+                            "Problema de conexión"
+                            :
+                            "Registro no confirmado";
 
 
-        byId("resultTitle")
+
+        byId(
+            "resultTitle"
+        )
             .textContent =
-            confirmed
+            recovered
                 ?
-                "Confirmación exitosa"
+                "Asistencia confirmada"
                 :
-                already
+                confirmed
                     ?
-                    "Colaborador ya confirmado"
+                    "Confirmación exitosa"
                     :
-                    uncertain
+                    already
                         ?
-                        "No se pudo recuperar la respuesta"
+                        "Colaborador ya confirmado"
                         :
-                        titles[
-                            result.code
-                        ]
-                        ||
-                        "No se pudo confirmar";
+                        uncertain
+                            ?
+                            "No se pudo confirmar el resultado"
+                            :
+                            titles[
+                                result.code
+                            ]
+                            ||
+                            "No se pudo confirmar";
 
 
-        byId("resultMessage")
-            .textContent =
+
+        if (
             uncertain
-                ?
-                (
-                    result.message
-                    ||
-                    "No se pudo recuperar la respuesta del servidor."
-                )
+        ) {
+
+            byId(
+                "resultMessage"
+            )
+                .textContent =
+                "No se pudo recibir una respuesta del servidor después de dos intentos. "
                 +
-                " Puedes reintentar la misma operación sin generar un registro duplicado."
-                :
-                (
-                    result.message
-                    ||
-                    "El servidor no devolvió un resultado reconocido."
-                );
+                "La asistencia pudo haberse registrado. Puedes repetir la operación.";
+
+        }
+        else if (
+            recovered
+        ) {
+
+            byId(
+                "resultMessage"
+            )
+                .textContent =
+                "La asistencia está confirmada. La respuesta de un intento anterior no se recibió correctamente.";
+
+        }
+        else {
+
+            byId(
+                "resultMessage"
+            )
+                .textContent =
+                result.message
+                ||
+                "El servidor no devolvió un resultado reconocido.";
+
+        }
+
 
 
         const participant =
             result.participant;
 
 
-        byId("participantDetails")
+
+        byId(
+            "participantDetails"
+        )
             .hidden =
             !(
                 confirmed
@@ -769,28 +1261,40 @@
             !participant;
 
 
-        byId("participantName")
+
+        byId(
+            "participantName"
+        )
             .textContent =
             participant?.name
             ||
             "";
 
 
-        byId("participantFolio")
+
+        byId(
+            "participantFolio"
+        )
             .textContent =
             participant?.folio
             ||
             submittedFolio;
 
 
-        byId("participantTime")
+
+        byId(
+            "participantTime"
+        )
             .textContent =
             participant?.entryTime
             ||
             "No disponible";
 
 
-        byId("participantMethod")
+
+        byId(
+            "participantMethod"
+        )
             .textContent =
             participant?.method ===
                 "QR"
@@ -805,47 +1309,55 @@
                     "No disponible";
 
 
+
         if (
             uncertain
         ) {
 
-            retryFolio =
-                submittedFolio;
+            retryOperation = {
 
+                key:
+                    operationKey,
 
-            retryMethod =
-                submittedMethod;
+                folio:
+                    submittedFolio,
 
+                method:
+                    submittedMethod
 
-            retryRequestId =
-                requestId;
+            };
 
         }
         else {
 
-            retryFolio =
-                "";
-
-
-            retryRequestId =
-                "";
+            retryOperation =
+                null;
 
         }
+
 
 
         nextButton.textContent =
             uncertain
                 ?
-                "Reintentar verificación"
+                "Repetir operación"
                 :
                 "Escanear siguiente";
 
 
-        byId("resultTitle")
+
+        byId(
+            "resultTitle"
+        )
             .focus();
 
     }
 
+
+
+    /* =========================================================
+       ESTADO DE INTERFAZ
+       ========================================================= */
 
     function setBusy(
         value
@@ -885,17 +1397,61 @@
 
         form.setAttribute(
             "aria-busy",
-            String(value)
+            String(
+                value
+            )
         );
 
     }
 
 
+
+    /* =========================================================
+       RESPUESTAS DEL SERVIDOR
+       ========================================================= */
+
+    function isUnauthorized(
+        result
+    ) {
+
+        return (
+            result?.sessionExpired
+            ||
+            result?.code ===
+                "UNAUTHORIZED"
+        );
+
+    }
+
+
+
+    function handleUnauthorized() {
+
+        leaving =
+            true;
+
+
+        void queueCamera(
+            stopCamera
+        );
+
+
+        auth.goToLogin(
+            true
+        );
+
+    }
+
+
+
+    /* =========================================================
+       REGISTRO DE ASISTENCIA
+       ========================================================= */
+
     async function submitAttendance(
         folio,
         submittedMethod,
-        requestId =
-            auth.createRequestId()
+        existingOperationKey = ""
     ) {
 
         if (
@@ -911,6 +1467,7 @@
         }
 
 
+
         const normalizedFolio =
             String(
                 folio || ""
@@ -919,12 +1476,55 @@
                 .toUpperCase();
 
 
-        if (!normalizedFolio)
+        if (!normalizedFolio) {
+
             return;
+
+        }
+
+
+
+        const normalizedMethod =
+            submittedMethod ===
+                "QR"
+                ?
+                "QR"
+                :
+                "MANUAL";
+
+
+
+        /*
+         * En un escaneo/registro nuevo siempre
+         * se crea una operación nueva.
+         *
+         * Solo "Repetir operación" proporciona
+         * existingOperationKey.
+         */
+        let operation =
+            getAttendanceOperation(
+                existingOperationKey
+            );
+
+
+        if (!operation) {
+
+            operation =
+                createAttendanceOperation(
+                    normalizedFolio,
+                    normalizedMethod
+                );
+
+        }
+
 
 
         scanLocked =
             true;
+
+
+        retryOperation =
+            null;
 
 
         setBusy(
@@ -932,89 +1532,172 @@
         );
 
 
-        cameraMessage.textContent =
-            "Confirmando asistencia…";
 
+        if (
+            !capturePanel.hidden
+        ) {
 
-        void queueCamera(
-            stopCamera
-        );
+            cameraMessage.textContent =
+                normalizedMethod ===
+                    "QR"
+                    ?
+                    "QR leído correctamente. Confirmando asistencia…"
+                    :
+                    "Confirmando asistencia…";
+
+        }
+        else {
+
+            byId(
+                "resultMessage"
+            )
+                .textContent =
+                "Repitiendo operación…";
+
+        }
+
 
 
         try {
 
-            const result =
-                await auth
-                    .confirmAttendance(
-                        token,
+            for (
+                let attempt = 1;
+                attempt <= AUTOMATIC_ATTEMPTS;
+                attempt++
+            ) {
+
+                operation.attempts++;
+
+
+                try {
+
+                    const result =
+                        await auth
+                            .confirmAttendance(
+                                token,
+                                normalizedFolio,
+                                normalizedMethod
+                            );
+
+
+
+                    if (
+                        isUnauthorized(
+                            result
+                        )
+                    ) {
+
+                        handleUnauthorized();
+
+
+                        return;
+
+                    }
+
+
+
+                    const interpreted =
+                        interpretAttendanceResponse(
+                            result,
+                            operation
+                        );
+
+
+
+                    showResult(
+                        interpreted,
                         normalizedFolio,
-                        submittedMethod,
-                        requestId
+                        false,
+                        normalizedMethod,
+                        operation.key
                     );
 
 
-            if (
-                result.sessionExpired
-                ||
-                result.code ===
-                    "UNAUTHORIZED"
-            ) {
+                    return;
 
-                leaving =
-                    true;
+                }
+                catch (error) {
 
-
-                await queueCamera(
-                    stopCamera
-                );
-
-
-                auth.goToLogin(
-                    true
-                );
+                    /*
+                     * Llegar aquí significa que no
+                     * obtuvimos una respuesta HTTP/JSON
+                     * utilizable.
+                     *
+                     * NO significa que Apps Script
+                     * necesariamente haya fallado.
+                     */
+                    markOperationFailure(
+                        operation,
+                        error
+                    );
 
 
-                return;
+
+                    if (
+                        attempt <
+                        AUTOMATIC_ATTEMPTS
+                    ) {
+
+                        if (
+                            !capturePanel.hidden
+                        ) {
+
+                            cameraMessage.textContent =
+                                "Respuesta no recibida. Reintentando confirmación…";
+
+                        }
+                        else {
+
+                            byId(
+                                "resultMessage"
+                            )
+                                .textContent =
+                                "Respuesta no recibida. Reintentando operación…";
+
+                        }
+
+
+                        continue;
+
+                    }
+
+
+
+                    /*
+                     * También falló el segundo intento.
+                     *
+                     * Mostramos el error y permitimos
+                     * al operador repetir manualmente.
+                     */
+                    showResult(
+
+                        {
+                            success:
+                                false,
+
+                            code:
+                                "CONNECTION_ERROR",
+
+                            message:
+                                error.message
+                        },
+
+                        normalizedFolio,
+
+                        true,
+
+                        normalizedMethod,
+
+                        operation.key
+
+                    );
+
+
+                    return;
+
+                }
 
             }
-
-
-            showResult(
-                result,
-                normalizedFolio,
-                false,
-                submittedMethod,
-                requestId
-            );
-
-        }
-        catch (error) {
-
-            /*
-             * auth.js ya realizó su reintento
-             * automático.
-             *
-             * Si todavía falla, conservamos el
-             * requestId para que el operador pueda
-             * volver a consultar exactamente la
-             * misma operación.
-             */
-            showResult(
-
-                {
-                    message:
-                        error.message
-                },
-
-                normalizedFolio,
-
-                true,
-
-                submittedMethod,
-
-                requestId
-
-            );
 
         }
         finally {
@@ -1032,14 +1715,23 @@
     }
 
 
+
+    /* =========================================================
+       SESIÓN
+       ========================================================= */
+
     async function verifySession() {
 
-        byId("sessionRetry")
+        byId(
+            "sessionRetry"
+        )
             .hidden =
             true;
 
 
-        byId("sessionMessage")
+        byId(
+            "sessionMessage"
+        )
             .textContent =
             "Verificando sesión…";
 
@@ -1053,6 +1745,7 @@
             if (!token) {
 
                 auth.goToLogin();
+
 
                 return;
 
@@ -1113,8 +1806,11 @@
             });
 
 
-            if (leaving)
+            if (leaving) {
+
                 return;
+
+            }
 
 
             ready =
@@ -1130,12 +1826,16 @@
         }
         catch (error) {
 
-            byId("sessionMessage")
+            byId(
+                "sessionMessage"
+            )
                 .textContent =
                 error.message;
 
 
-            byId("sessionRetry")
+            byId(
+                "sessionRetry"
+            )
                 .hidden =
                 false;
 
@@ -1144,11 +1844,11 @@
     }
 
 
-    /*
-     * Captura manual:
-     * el input contiene únicamente los cuatro
-     * caracteres posteriores a RAPC-.
-     */
+
+    /* =========================================================
+       CAPTURA MANUAL
+       ========================================================= */
+
     folioInput.addEventListener(
         "input",
         () => {
@@ -1174,6 +1874,9 @@
                 true;
 
 
+            clearQrReadState();
+
+
             if (
                 window.Html5Qrcode
                 &&
@@ -1185,7 +1888,9 @@
             }
 
 
-            byId("folioHelp")
+            byId(
+                "folioHelp"
+            )
                 .textContent =
                 "Ingreso manual. Escribe los 4 caracteres finales del folio.";
 
@@ -1197,66 +1902,7 @@
     );
 
 
-    cameraButton.addEventListener(
-        "click",
-        () => {
 
-            void queueCamera(
-                async () => {
-
-                    if (
-                        !ready
-                        ||
-                        busy
-                        ||
-                        leaving
-                        ||
-                        capturePanel.hidden
-                    ) {
-
-                        return;
-
-                    }
-
-
-                    if (
-                        window.Html5Qrcode
-                        &&
-                        scanner
-                        &&
-                        cameraState() ===
-                            Html5QrcodeScannerState
-                                .SCANNING
-                    ) {
-
-                        await stopCamera();
-
-
-                        cameraMessage.textContent =
-                            "Cámara detenida. Puedes ingresar el folio manualmente.";
-
-                    }
-                    else {
-
-                        await startCamera();
-
-                    }
-
-                }
-            );
-
-        }
-    );
-
-
-    /*
-     * El formulario se usa únicamente para captura
-     * manual.
-     *
-     * Un QR nunca necesita este botón porque
-     * onQrRead() llama directamente a
-     * submitAttendance().
-     */
     form.addEventListener(
         "submit",
         event => {
@@ -1313,6 +1959,75 @@
     );
 
 
+
+    /* =========================================================
+       BOTÓN DE CÁMARA
+       ========================================================= */
+
+    cameraButton.addEventListener(
+        "click",
+        () => {
+
+            void queueCamera(
+                async () => {
+
+                    if (
+                        !ready
+                        ||
+                        busy
+                        ||
+                        leaving
+                        ||
+                        capturePanel.hidden
+                    ) {
+
+                        return;
+
+                    }
+
+
+                    if (
+                        window.Html5Qrcode
+                        &&
+                        scanner
+                        &&
+                        cameraState() ===
+                            Html5QrcodeScannerState
+                                .SCANNING
+                    ) {
+
+                        await stopCamera();
+
+
+                        cameraMessage.textContent =
+                            "Cámara detenida. Puedes ingresar el folio manualmente.";
+
+                    }
+                    else {
+
+                        scanLocked =
+                            false;
+
+
+                        clearQrReadState();
+
+
+                        await startCamera();
+
+                    }
+
+                }
+            );
+
+        }
+    );
+
+
+
+    /* =========================================================
+       SIGUIENTE / REINTENTO MANUAL
+       ========================================================= */
+
     nextButton.addEventListener(
         "click",
         () => {
@@ -1328,27 +2043,21 @@
             }
 
 
-            /*
-             * Si la respuesta se perdió incluso
-             * después del reintento automático,
-             * volvemos a enviar exactamente la
-             * misma operación.
-             */
             if (
-                retryFolio
-                &&
-                retryRequestId
+                retryOperation
             ) {
 
-                byId("resultMessage")
-                    .textContent =
-                    "Reintentando la misma operación…";
+                const pending = {
+
+                    ...retryOperation
+
+                };
 
 
                 void submitAttendance(
-                    retryFolio,
-                    retryMethod,
-                    retryRequestId
+                    pending.folio,
+                    pending.method,
+                    pending.key
                 );
 
 
@@ -1362,6 +2071,11 @@
         }
     );
 
+
+
+    /* =========================================================
+       LOGOUT
+       ========================================================= */
 
     logoutButton.addEventListener(
         "click",
@@ -1450,7 +2164,9 @@
                     "Cerrar sesión";
 
 
-                byId("globalMessage")
+                byId(
+                    "globalMessage"
+                )
                     .textContent =
                     `${error.message} Vuelve a intentar cerrar sesión.`;
 
@@ -1460,13 +2176,25 @@
     );
 
 
-    byId("sessionRetry")
+
+    /* =========================================================
+       REINTENTO DE SESIÓN
+       ========================================================= */
+
+    byId(
+        "sessionRetry"
+    )
         .addEventListener(
             "click",
             () =>
                 void verifySession()
         );
 
+
+
+    /* =========================================================
+       CICLO DE VIDA
+       ========================================================= */
 
     document.addEventListener(
         "visibilitychange",
@@ -1503,6 +2231,7 @@
     );
 
 
+
     window.addEventListener(
         "pagehide",
         () => {
@@ -1528,6 +2257,7 @@
     );
 
 
+
     window.addEventListener(
         "pageshow",
         event => {
@@ -1542,9 +2272,9 @@
 
         }
     );
-
-
+    
     void auth.loadAppInfo();
+
 
     void verifySession();
 
