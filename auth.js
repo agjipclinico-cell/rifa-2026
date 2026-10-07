@@ -6,46 +6,230 @@
         window.AttendanceConfig;
 
 
+    const DEFAULT_REQUEST_TIMEOUT_MS =
+        Number.isFinite(
+            Number(
+                config.REQUEST_TIMEOUT_MS
+            )
+        )
+        &&
+        Number(
+            config.REQUEST_TIMEOUT_MS
+        ) > 0
+            ?
+            Number(
+                config.REQUEST_TIMEOUT_MS
+            )
+            :
+            30000;
 
-    function normalizeTimeout(
-        value,
-        fallback
+
+    /*
+     * Para login no queremos esperar 30 segundos
+     * antes de poder recuperarnos de un problema
+     * de ContentService.
+     *
+     * Cada solicitud de login puede esperar
+     * hasta 10 segundos.
+     */
+    const LOGIN_REQUEST_TIMEOUT_MS =
+        Number.isFinite(
+            Number(
+                config.LOGIN_REQUEST_TIMEOUT_MS
+            )
+        )
+        &&
+        Number(
+            config.LOGIN_REQUEST_TIMEOUT_MS
+        ) > 0
+            ?
+            Number(
+                config.LOGIN_REQUEST_TIMEOUT_MS
+            )
+            :
+            10000;
+
+
+    /*
+     * Después de este tiempo mostramos un mensaje
+     * neutro al usuario aunque la solicitud siga
+     * procesándose normalmente.
+     */
+    const SLOW_REQUEST_NOTICE_MS =
+        4000;
+
+
+
+    function isRecoverableRequestFailure(
+        error
     ) {
 
-        const number =
-            Number(
-                value
-            );
+        if (!error) {
+
+            return false;
+
+        }
 
 
-        return (
+        /*
+         * 404:
+         * fallo que ya observamos en la cadena
+         * de redirección de ContentService.
+         */
+        if (
+            error.httpStatus ===
+            404
+        ) {
+
+            return true;
+
+        }
+
+
+        /*
+         * Errores temporales del servidor.
+         */
+        if (
             Number.isFinite(
-                number
+                error.httpStatus
             )
             &&
-            number > 0
-        )
-            ?
-            number
-            :
-            fallback;
+            error.httpStatus >= 500
+            &&
+            error.httpStatus <= 599
+        ) {
+
+            return true;
+
+        }
+
+
+        /*
+         * Timeout local.
+         */
+        if (
+            error.name ===
+            "AbortError"
+        ) {
+
+            return true;
+
+        }
+
+
+        /*
+         * Fallo de fetch/red/CORS/redirección.
+         */
+        if (
+            error.name ===
+            "TypeError"
+        ) {
+
+            return true;
+
+        }
+
+
+        /*
+         * Google devolvió HTML u otro contenido
+         * en lugar del JSON esperado.
+         */
+        if (
+            error.name ===
+            "SyntaxError"
+        ) {
+
+            return true;
+
+        }
+
+
+        if (
+            error.diagnosticCode ===
+            "INVALID_RESPONSE"
+        ) {
+
+            return true;
+
+        }
+
+
+        return false;
 
     }
 
 
 
-    const DEFAULT_REQUEST_TIMEOUT_MS =
-        normalizeTimeout(
-            config.REQUEST_TIMEOUT_MS,
-            15000
-        );
+    function createPublicRequestError(
+        error,
+        httpStatus
+    ) {
+
+        let message;
 
 
-    const ATTENDANCE_REQUEST_TIMEOUT_MS =
-        normalizeTimeout(
-            config.ATTENDANCE_REQUEST_TIMEOUT_MS,
-            10000
-        );
+        if (
+            error?.name ===
+            "AbortError"
+        ) {
+
+            message =
+                "El servidor tardó demasiado en completar la operación.";
+
+        }
+        else if (
+            httpStatus
+        ) {
+
+            message =
+                "No se pudo completar la conexión con el servidor.";
+
+        }
+        else if (
+            error?.name ===
+            "SyntaxError"
+            ||
+            error?.diagnosticCode ===
+                "INVALID_RESPONSE"
+        ) {
+
+            message =
+                "El servidor devolvió un resultado inesperado.";
+
+        }
+        else {
+
+            message =
+                "No se pudo completar la conexión con el servidor.";
+
+        }
+
+
+        const failure =
+            new Error(
+                message
+            );
+
+
+        failure.httpStatus =
+            httpStatus;
+
+
+        failure.diagnosticCode =
+            error?.diagnosticCode
+            ||
+            error?.name
+            ||
+            "REQUEST_FAILED";
+
+
+        failure.transportFailure =
+            true;
+
+
+        return failure;
+
+    }
 
 
 
@@ -53,295 +237,374 @@
         action,
         parameters = {},
         method = "POST",
-        timeoutMs =
-            DEFAULT_REQUEST_TIMEOUT_MS
+        options = {}
     ) {
 
-        const url =
-            new URL(
-                config.API_URL
-            );
+        const timeoutMs =
+            Number.isFinite(
+                Number(
+                    options.timeoutMs
+                )
+            )
+            &&
+            Number(
+                options.timeoutMs
+            ) > 0
+                ?
+                Number(
+                    options.timeoutMs
+                )
+                :
+                DEFAULT_REQUEST_TIMEOUT_MS;
 
 
-        const body =
-            new URLSearchParams({
-                action,
-                ...parameters
-            });
+        const maxAttempts =
+            Number.isInteger(
+                options.maxAttempts
+            )
+            &&
+            options.maxAttempts > 0
+                ?
+                options.maxAttempts
+                :
+                1;
 
 
-        if (
-            method ===
-            "GET"
-        ) {
-
-            url.search =
-                body.toString();
-
-        }
+        const onSlow =
+            typeof options.onSlow ===
+                "function"
+                ?
+                options.onSlow
+                :
+                null;
 
 
-
-        const startedAt =
-            Date.now();
-
-
-        const controller =
-            new AbortController();
-
-
-        const timeout =
-            setTimeout(
-                () =>
-                    controller.abort(),
-                timeoutMs
-            );
-
-
-        const options = {
-
-            method,
-
-            credentials:
-                "omit",
-
-            redirect:
-                "follow",
-
-            cache:
-                "no-store",
-
-            signal:
-                controller.signal
-
-        };
+        const slowNoticeMs =
+            Number.isFinite(
+                Number(
+                    options.slowNoticeMs
+                )
+            )
+            &&
+            Number(
+                options.slowNoticeMs
+            ) >= 0
+                ?
+                Number(
+                    options.slowNoticeMs
+                )
+                :
+                SLOW_REQUEST_NOTICE_MS;
 
 
-        if (
-            method !==
-            "GET"
-        ) {
-
-            options.body =
-                body;
-
-        }
+        let slowNoticeShown =
+            false;
 
 
 
-        let phase =
-            "FETCH";
-
-
-        let httpStatus =
-            null;
-
-
-
-        try {
-
-            console.info(
-                "[API envío]",
-                {
-                    action,
-                    method
-                }
-            );
-
-
-            const response =
-                await fetch(
-                    url,
-                    options
-                );
-
-
-            httpStatus =
-                response.status;
-
+        function notifySlow() {
 
             if (
-                !response.ok
-            ) {
-
-                const error =
-                    new Error(
-                        `El servidor respondió HTTP ${response.status}.`
-                    );
-
-
-                error.httpStatus =
-                    response.status;
-
-
-                throw error;
-
-            }
-
-
-
-            phase =
-                "JSON";
-
-
-            const result =
-                await response.json();
-
-
-
-            if (
-                !result
+                slowNoticeShown
                 ||
-                typeof result.success !==
-                    "boolean"
+                !onSlow
             ) {
 
-                const error =
-                    new Error(
-                        "La respuesta no contiene success como booleano."
-                    );
-
-
-                error.diagnosticCode =
-                    "INVALID_RESPONSE";
-
-
-                throw error;
+                return;
 
             }
 
 
-
-            console.info(
-                "[API respuesta]",
-                {
-                    action,
-
-                    milliseconds:
-                        Date.now()
-                        -
-                        startedAt,
-
-                    httpStatus,
-
-                    success:
-                        result.success,
-
-                    code:
-                        result.code
-                }
-            );
-
-
-            return result;
-
-        }
-        catch (error) {
-
-            console.warn(
-                "[API fallo]",
-                {
-                    action,
-
-                    phase,
-
-                    milliseconds:
-                        Date.now()
-                        -
-                        startedAt,
-
-                    httpStatus,
-
-                    errorType:
-                        error.name,
-
-                    diagnosticCode:
-                        error.diagnosticCode
-                }
-            );
-
-
-
-            let message;
-
-
-
-            if (
-                error.name ===
-                "AbortError"
-            ) {
-
-                message =
-                    "Se agotó el tiempo de espera de la respuesta.";
-
-            }
-            else if (
-                error.httpStatus
-            ) {
-
-                message =
-                    `No se pudo recuperar la respuesta del servidor (HTTP ${error.httpStatus}).`;
-
-            }
-            else if (
-                error.name ===
-                "SyntaxError"
-            ) {
-
-                message =
-                    "El servidor respondió con un formato inesperado.";
-
-            }
-            else if (
-                error.diagnosticCode ===
-                "INVALID_RESPONSE"
-            ) {
-
-                message =
-                    error.message;
-
-            }
-            else {
-
-                message =
-                    "El navegador no pudo recibir la respuesta. Revisa la conexión y vuelve a intentarlo.";
-
-            }
-
-
-
-            const failure =
-                new Error(
-                    message
-                );
-
-
-            failure.httpStatus =
-                httpStatus;
-
-
-            failure.diagnosticCode =
-                error.diagnosticCode
-                ||
-                error.name;
-
-
-            /*
-             * scanner.js puede distinguir que no
-             * recibió una respuesta utilizable.
-             */
-            failure.transportFailure =
+            slowNoticeShown =
                 true;
 
 
-            throw failure;
+            try {
+
+                onSlow();
+
+            }
+            catch {
+
+                /*
+                 * El mensaje visual nunca debe
+                 * interferir con la petición.
+                 */
+
+            }
 
         }
-        finally {
 
-            clearTimeout(
-                timeout
-            );
+
+
+        for (
+            let attempt = 1;
+            attempt <= maxAttempts;
+            attempt++
+        ) {
+
+            const url =
+                new URL(
+                    config.API_URL
+                );
+
+
+            const body =
+                new URLSearchParams({
+                    action,
+                    ...parameters
+                });
+
+
+            if (
+                method ===
+                "GET"
+            ) {
+
+                url.search =
+                    body.toString();
+
+            }
+
+
+            const controller =
+                new AbortController();
+
+
+            const startedAt =
+                Date.now();
+
+
+            const timeout =
+                setTimeout(
+                    () => {
+
+                        controller.abort();
+
+                    },
+                    timeoutMs
+                );
+
+
+            const slowNotice =
+                setTimeout(
+                    () => {
+
+                        notifySlow();
+
+                    },
+                    slowNoticeMs
+                );
+
+
+            const requestOptions = {
+
+                method,
+
+                credentials:
+                    "omit",
+
+                redirect:
+                    "follow",
+
+                cache:
+                    "no-store",
+
+                signal:
+                    controller.signal
+
+            };
+
+
+            if (
+                method !==
+                "GET"
+            ) {
+
+                requestOptions.body =
+                    body;
+
+            }
+
+
+            let phase =
+                "FETCH";
+
+
+            let httpStatus =
+                null;
+
+
+
+            try {
+
+                console.info(
+                    "[API envío]",
+                    {
+                        action,
+                        method,
+                        attempt
+                    }
+                );
+
+
+                const response =
+                    await fetch(
+                        url,
+                        requestOptions
+                    );
+
+
+                httpStatus =
+                    response.status;
+
+
+                if (
+                    !response.ok
+                ) {
+
+                    const error =
+                        new Error(
+                            `HTTP ${response.status}`
+                        );
+
+
+                    error.httpStatus =
+                        response.status;
+
+
+                    throw error;
+
+                }
+
+
+                phase =
+                    "JSON";
+
+
+                const result =
+                    await response.json();
+
+
+                if (
+                    !result
+                    ||
+                    typeof result.success !==
+                        "boolean"
+                ) {
+
+                    const error =
+                        new Error(
+                            "Respuesta inválida."
+                        );
+
+
+                    error.diagnosticCode =
+                        "INVALID_RESPONSE";
+
+
+                    throw error;
+
+                }
+
+
+                console.info(
+                    "[API respuesta]",
+                    {
+                        action,
+                        attempt,
+
+                        milliseconds:
+                            Date.now()
+                            -
+                            startedAt,
+
+                        httpStatus,
+
+                        success:
+                            result.success,
+
+                        code:
+                            result.code
+                    }
+                );
+
+
+                return result;
+
+            }
+            catch (error) {
+
+                console.warn(
+                    "[API fallo]",
+                    {
+                        action,
+                        attempt,
+                        phase,
+
+                        milliseconds:
+                            Date.now()
+                            -
+                            startedAt,
+
+                        httpStatus,
+
+                        errorType:
+                            error.name,
+
+                        diagnosticCode:
+                            error.diagnosticCode
+                    }
+                );
+
+
+                const recoverable =
+                    isRecoverableRequestFailure(
+                        error
+                    );
+
+
+                if (
+                    recoverable
+                    &&
+                    attempt <
+                        maxAttempts
+                ) {
+
+                    /*
+                     * Desde el punto de vista del
+                     * usuario simplemente hay una
+                     * operación que está tardando.
+                     *
+                     * No mostramos información sobre
+                     * solicitudes internas.
+                     */
+                    notifySlow();
+
+
+                    continue;
+
+                }
+
+
+                throw createPublicRequestError(
+                    error,
+                    httpStatus
+                );
+
+            }
+            finally {
+
+                clearTimeout(
+                    timeout
+                );
+
+
+                clearTimeout(
+                    slowNotice
+                );
+
+            }
 
         }
 
@@ -434,6 +697,14 @@
 
 
 
+    /*
+     * El título ya está disponible en config.js.
+     *
+     * No hacemos una petición a Apps Script solo
+     * para obtener appInfo. Esto reduce carga y
+     * evita una segunda petición simultánea
+     * durante el login.
+     */
     async function loadAppInfo() {
 
         document
@@ -448,47 +719,6 @@
 
                 }
             );
-
-
-        try {
-
-            const result =
-                await request(
-                    "appInfo",
-                    {},
-                    "GET"
-                );
-
-
-            if (
-                result.success
-                &&
-                typeof result.title ===
-                    "string"
-            ) {
-
-                document
-                    .querySelectorAll(
-                        "[data-app-title]"
-                    )
-                    .forEach(
-                        element => {
-
-                            element.textContent =
-                                result.title;
-
-                        }
-                    );
-
-            }
-
-        }
-        catch {
-
-            /*
-             * appInfo no es crítico.
-             */
-        }
 
     }
 
@@ -510,35 +740,79 @@
             loadAppInfo,
 
 
+            /*
+             * LOGIN
+             *
+             * Máximo:
+             *
+             * solicitud inicial
+             * + recuperación 1
+             * + recuperación 2
+             *
+             * Solo ocurre ante fallos técnicos.
+             *
+             * Una respuesta válida como
+             * "credenciales incorrectas"
+             * jamás se repite.
+             */
             login:
                 (
                     username,
-                    password
+                    password,
+                    onSlow = null
                 ) =>
                     request(
                         "login",
                         {
                             username,
                             password
-                        }
-                    ),
-
-
-            validateSession:
-                token =>
-                    request(
-                        "validateSession",
+                        },
+                        "POST",
                         {
-                            token
+                            timeoutMs:
+                                LOGIN_REQUEST_TIMEOUT_MS,
+
+                            maxAttempts:
+                                3,
+
+                            onSlow
                         }
                     ),
 
 
             /*
-             * Una llamada = una petición HTTP.
+             * validateSession no modifica
+             * información operativa.
+             */
+            validateSession:
+                (
+                    token,
+                    onSlow = null
+                ) =>
+                    request(
+                        "validateSession",
+                        {
+                            token
+                        },
+                        "POST",
+                        {
+                            maxAttempts:
+                                2,
+
+                            onSlow
+                        }
+                    ),
+
+
+            /*
+             * IMPORTANTE:
              *
-             * scanner.js decide si debe hacerse
-             * un segundo intento.
+             * Aquí se hace exactamente una
+             * solicitud.
+             *
+             * La memoria de 30 segundos y la
+             * recuperación de asistencia viven
+             * exclusivamente en scanner.js.
              */
             confirmAttendance:
                 (
@@ -554,16 +828,33 @@
                             method
                         },
                         "POST",
-                        ATTENDANCE_REQUEST_TIMEOUT_MS
+                        {
+                            maxAttempts:
+                                1
+                        }
                     ),
 
 
+            /*
+             * Cerrar una sesión ya inexistente
+             * sigue dejando el mismo estado final.
+             */
             logout:
-                token =>
+                (
+                    token,
+                    onSlow = null
+                ) =>
                     request(
                         "logout",
                         {
                             token
+                        },
+                        "POST",
+                        {
+                            maxAttempts:
+                                2,
+
+                            onSlow
                         }
                     )
 
@@ -658,6 +949,16 @@
 
 
 
+        function showSlowServerMessage() {
+
+            showMessage(
+                "El servidor está tardando más de lo normal. Seguimos procesando tu acceso."
+            );
+
+        }
+
+
+
         form.addEventListener(
             "submit",
             async event => {
@@ -719,7 +1020,8 @@
                             .AttendanceAuth
                             .login(
                                 username,
-                                passwordValue
+                                passwordValue,
+                                showSlowServerMessage
                             );
 
 
@@ -776,7 +1078,9 @@
                 catch (error) {
 
                     showMessage(
-                        error.message,
+                        error.message
+                        ||
+                        "No se pudo conectar con el servidor. Intenta nuevamente.",
                         true
                     );
 
@@ -798,6 +1102,10 @@
 
 
 
+        /*
+         * Solo utiliza config.TITLE.
+         * Ya no genera una solicitud appInfo.
+         */
         void loadAppInfo();
 
 
@@ -821,11 +1129,11 @@
 
         try {
 
-            const token =
+            const storedToken =
                 getToken();
 
 
-            if (!token) {
+            if (!storedToken) {
 
                 return;
 
@@ -841,7 +1149,8 @@
                 await window
                     .AttendanceAuth
                     .validateSession(
-                        token
+                        storedToken,
+                        showSlowServerMessage
                     );
 
 
@@ -858,7 +1167,8 @@
 
                     ...result,
 
-                    token
+                    token:
+                        storedToken
 
                 });
 
@@ -896,7 +1206,9 @@
         catch (error) {
 
             showMessage(
-                error.message,
+                error.message
+                ||
+                "No se pudo conectar con el servidor. Puedes iniciar sesión nuevamente.",
                 true
             );
 
