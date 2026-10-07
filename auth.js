@@ -1,65 +1,60 @@
 (() => {
     "use strict";
 
-    const config = window.AttendanceConfig;
+
+    const config =
+        window.AttendanceConfig;
 
 
-    function createRequestId() {
 
-        if (
-            window.crypto &&
-            typeof window.crypto.randomUUID === "function"
-        ) {
-            return window.crypto.randomUUID();
-        }
+    function normalizeTimeout(
+        value,
+        fallback
+    ) {
 
-
-        if (
-            window.crypto &&
-            typeof window.crypto.getRandomValues === "function"
-        ) {
-
-            const bytes =
-                new Uint8Array(16);
-
-            window.crypto.getRandomValues(
-                bytes
+        const number =
+            Number(
+                value
             );
-
-            return Array
-                .from(
-                    bytes,
-                    value =>
-                        value
-                            .toString(16)
-                            .padStart(2, "0")
-                )
-                .join("");
-
-        }
 
 
         return (
-            Date.now().toString(36)
-            +
-            "-"
-            +
-            Math.random()
-                .toString(36)
-                .slice(2)
-            +
-            Math.random()
-                .toString(36)
-                .slice(2)
-        );
+            Number.isFinite(
+                number
+            )
+            &&
+            number > 0
+        )
+            ?
+            number
+            :
+            fallback;
 
     }
+
+
+
+    const DEFAULT_REQUEST_TIMEOUT_MS =
+        normalizeTimeout(
+            config.REQUEST_TIMEOUT_MS,
+            15000
+        );
+
+
+    const ATTENDANCE_REQUEST_TIMEOUT_MS =
+        normalizeTimeout(
+            config.ATTENDANCE_REQUEST_TIMEOUT_MS,
+            10000
+        );
+
 
 
     async function request(
         action,
         parameters = {},
-        method = "POST"
+        method = "POST",
+        timeoutMs =
+            DEFAULT_REQUEST_TIMEOUT_MS
     ) {
 
         const url =
@@ -68,14 +63,6 @@
             );
 
 
-        /*
-         * El body se crea una sola vez.
-         *
-         * Esto es especialmente importante para
-         * confirmAttendance, porque todos los
-         * reintentos conservan exactamente el mismo
-         * requestId.
-         */
         const body =
             new URLSearchParams({
                 action,
@@ -84,7 +71,8 @@
 
 
         if (
-            method === "GET"
+            method ===
+            "GET"
         ) {
 
             url.search =
@@ -93,379 +81,272 @@
         }
 
 
-        /*
-         * Solo estas operaciones pueden reintentarse
-         * automáticamente.
-         *
-         * confirmAttendance es idempotente gracias
-         * al requestId almacenado en Apps Script.
-         *
-         * validateSession y appInfo son de lectura.
-         *
-         * logout también es idempotente: eliminar
-         * dos veces una sesión produce el mismo
-         * estado final.
-         *
-         * login NO se incluye porque un primer login
-         * cuya respuesta se haya perdido podría haber
-         * creado ya una sesión.
-         */
-        const retryableActions =
-            new Set([
-                "appInfo",
-                "validateSession",
-                "confirmAttendance",
-                "logout"
-            ]);
+
+        const startedAt =
+            Date.now();
 
 
-        const maxAttempts =
-            retryableActions.has(
-                action
-            )
-                ? 2
-                : 1;
+        const controller =
+            new AbortController();
 
 
-        for (
-            let attempt = 1;
-            attempt <= maxAttempts;
-            attempt++
+        const timeout =
+            setTimeout(
+                () =>
+                    controller.abort(),
+                timeoutMs
+            );
+
+
+        const options = {
+
+            method,
+
+            credentials:
+                "omit",
+
+            redirect:
+                "follow",
+
+            cache:
+                "no-store",
+
+            signal:
+                controller.signal
+
+        };
+
+
+        if (
+            method !==
+            "GET"
         ) {
 
-            const startedAt =
-                Date.now();
+            options.body =
+                body;
+
+        }
 
 
-            const controller =
-                new AbortController();
+
+        let phase =
+            "FETCH";
 
 
-            const timeout =
-                setTimeout(
-                    () =>
-                        controller.abort(),
-                    config.REQUEST_TIMEOUT_MS
+        let httpStatus =
+            null;
+
+
+
+        try {
+
+            console.info(
+                "[API envío]",
+                {
+                    action,
+                    method
+                }
+            );
+
+
+            const response =
+                await fetch(
+                    url,
+                    options
                 );
 
 
-            const options = {
-
-                method,
-
-                credentials:
-                    "omit",
-
-                redirect:
-                    "follow",
-
-                cache:
-                    "no-store",
-
-                signal:
-                    controller.signal
-
-            };
+            httpStatus =
+                response.status;
 
 
             if (
-                method !== "GET"
+                !response.ok
             ) {
 
-                options.body =
-                    body;
-
-            }
-
-
-            let phase =
-                "FETCH";
-
-            let httpStatus =
-                null;
-
-
-            try {
-
-                console.info(
-                    "[API envío]",
-                    {
-                        action,
-                        method,
-                        attempt
-                    }
-                );
-
-
-                const response =
-                    await fetch(
-                        url,
-                        options
+                const error =
+                    new Error(
+                        `El servidor respondió HTTP ${response.status}.`
                     );
 
 
-                httpStatus =
+                error.httpStatus =
                     response.status;
 
 
-                if (
-                    !response.ok
-                ) {
-
-                    const error =
-                        new Error(
-                            `El servidor respondió HTTP ${response.status}.`
-                        );
-
-
-                    error.httpStatus =
-                        response.status;
-
-
-                    throw error;
-
-                }
-
-
-                phase =
-                    "JSON";
-
-
-                /*
-                 * Si Google devuelve accidentalmente
-                 * una página HTML en lugar del JSON
-                 * de ContentService, esta operación
-                 * lanzará SyntaxError.
-                 *
-                 * Para acciones idempotentes ese
-                 * error puede reintentarse.
-                 */
-                const result =
-                    await response.json();
-
-
-                if (
-                    !result ||
-                    typeof result.success !==
-                        "boolean"
-                ) {
-
-                    const error =
-                        new Error(
-                            "La respuesta no contiene success como booleano."
-                        );
-
-
-                    error.diagnosticCode =
-                        "INVALID_RESPONSE";
-
-
-                    throw error;
-
-                }
-
-
-                console.info(
-                    "[API respuesta]",
-                    {
-                        action,
-                        attempt,
-                        milliseconds:
-                            Date.now()
-                            -
-                            startedAt,
-                        httpStatus,
-                        success:
-                            result.success,
-                        code:
-                            result.code
-                    }
-                );
-
-
-                return result;
+                throw error;
 
             }
-            catch (error) {
-
-                console.warn(
-                    "[API fallo]",
-                    {
-                        action,
-                        attempt,
-                        phase,
-                        milliseconds:
-                            Date.now()
-                            -
-                            startedAt,
-                        httpStatus,
-                        errorType:
-                            error.name,
-                        diagnosticCode:
-                            error.diagnosticCode
-                    }
-                );
 
 
-                /*
-                 * Fallos de transporte que pueden
-                 * ocurrir aunque Apps Script haya
-                 * ejecutado correctamente la acción.
-                 *
-                 * 404:
-                 * fallo observado en la redirección
-                 * de ContentService.
-                 *
-                 * SyntaxError:
-                 * Google devolvió HTML u otro contenido
-                 * en lugar del JSON esperado.
-                 *
-                 * TypeError:
-                 * normalmente un fallo de fetch/red.
-                 *
-                 * AbortError:
-                 * timeout local.
-                 *
-                 * INVALID_RESPONSE:
-                 * hubo respuesta, pero no cumple
-                 * el contrato esperado.
-                 */
-                const retryableFailure =
-                    error.httpStatus === 404
-                    ||
-                    error.name === "SyntaxError"
-                    ||
-                    error.name === "TypeError"
-                    ||
-                    error.name === "AbortError"
-                    ||
-                    error.diagnosticCode ===
-                        "INVALID_RESPONSE";
+
+            phase =
+                "JSON";
 
 
-                if (
-                    retryableActions.has(
-                        action
-                    )
-                    &&
-                    retryableFailure
-                    &&
-                    attempt < maxAttempts
-                ) {
-
-                    let reason;
+            const result =
+                await response.json();
 
 
-                    if (
-                        error.httpStatus
-                    ) {
 
-                        reason =
-                            `HTTP_${error.httpStatus}`;
+            if (
+                !result
+                ||
+                typeof result.success !==
+                    "boolean"
+            ) {
 
-                    }
-                    else {
-
-                        reason =
-                            error.diagnosticCode
-                            ||
-                            error.name;
-
-                    }
-
-
-                    console.info(
-                        "[API reintento]",
-                        {
-                            action,
-                            reason,
-                            nextAttempt:
-                                attempt + 1
-                        }
-                    );
-
-
-                    continue;
-
-                }
-
-
-                let message;
-
-
-                if (
-                    error.name ===
-                        "AbortError"
-                ) {
-
-                    message =
-                        "Se agotó el tiempo de espera de la respuesta.";
-
-                }
-                else if (
-                    error.httpStatus
-                ) {
-
-                    message =
-                        `No se pudo recuperar la respuesta del servidor (HTTP ${error.httpStatus}).`;
-
-                }
-                else if (
-                    error.name ===
-                        "SyntaxError"
-                ) {
-
-                    message =
-                        "El servidor respondió con un formato inesperado.";
-
-                }
-                else if (
-                    error.diagnosticCode ===
-                        "INVALID_RESPONSE"
-                ) {
-
-                    message =
-                        error.message;
-
-                }
-                else {
-
-                    message =
-                        "El navegador no pudo recibir la respuesta. Revisa la conexión y vuelve a intentarlo.";
-
-                }
-
-
-                const failure =
+                const error =
                     new Error(
-                        message
+                        "La respuesta no contiene success como booleano."
                     );
 
 
-                failure.httpStatus =
-                    httpStatus;
+                error.diagnosticCode =
+                    "INVALID_RESPONSE";
 
 
-                failure.diagnosticCode =
-                    error.diagnosticCode
-                    ||
-                    error.name;
-
-
-                throw failure;
+                throw error;
 
             }
-            finally {
 
-                clearTimeout(
-                    timeout
+
+
+            console.info(
+                "[API respuesta]",
+                {
+                    action,
+
+                    milliseconds:
+                        Date.now()
+                        -
+                        startedAt,
+
+                    httpStatus,
+
+                    success:
+                        result.success,
+
+                    code:
+                        result.code
+                }
+            );
+
+
+            return result;
+
+        }
+        catch (error) {
+
+            console.warn(
+                "[API fallo]",
+                {
+                    action,
+
+                    phase,
+
+                    milliseconds:
+                        Date.now()
+                        -
+                        startedAt,
+
+                    httpStatus,
+
+                    errorType:
+                        error.name,
+
+                    diagnosticCode:
+                        error.diagnosticCode
+                }
+            );
+
+
+
+            let message;
+
+
+
+            if (
+                error.name ===
+                "AbortError"
+            ) {
+
+                message =
+                    "Se agotó el tiempo de espera de la respuesta.";
+
+            }
+            else if (
+                error.httpStatus
+            ) {
+
+                message =
+                    `No se pudo recuperar la respuesta del servidor (HTTP ${error.httpStatus}).`;
+
+            }
+            else if (
+                error.name ===
+                "SyntaxError"
+            ) {
+
+                message =
+                    "El servidor respondió con un formato inesperado.";
+
+            }
+            else if (
+                error.diagnosticCode ===
+                "INVALID_RESPONSE"
+            ) {
+
+                message =
+                    error.message;
+
+            }
+            else {
+
+                message =
+                    "El navegador no pudo recibir la respuesta. Revisa la conexión y vuelve a intentarlo.";
+
+            }
+
+
+
+            const failure =
+                new Error(
+                    message
                 );
 
-            }
+
+            failure.httpStatus =
+                httpStatus;
+
+
+            failure.diagnosticCode =
+                error.diagnosticCode
+                ||
+                error.name;
+
+
+            /*
+             * scanner.js puede distinguir que no
+             * recibió una respuesta utilizable.
+             */
+            failure.transportFailure =
+                true;
+
+
+            throw failure;
+
+        }
+        finally {
+
+            clearTimeout(
+                timeout
+            );
 
         }
 
     }
+
 
 
     function getToken() {
@@ -480,6 +361,7 @@
         );
 
     }
+
 
 
     function saveSession(
@@ -517,17 +399,20 @@
     }
 
 
+
     function clearSession() {
 
         sessionStorage.removeItem(
             "attendanceToken"
         );
 
+
         sessionStorage.removeItem(
             "attendanceExpiresAt"
         );
 
     }
+
 
 
     function goToLogin(
@@ -539,11 +424,14 @@
 
         window.location.replace(
             expired
-                ? "index.html?expired=1"
-                : "index.html"
+                ?
+                "index.html?expired=1"
+                :
+                "index.html"
         );
 
     }
+
 
 
     async function loadAppInfo() {
@@ -573,7 +461,8 @@
 
 
             if (
-                result.success &&
+                result.success
+                &&
                 typeof result.title ===
                     "string"
             ) {
@@ -598,21 +487,17 @@
 
             /*
              * appInfo no es crítico.
-             * Si falla, se conserva el título
-             * definido localmente en config.js.
              */
-
         }
 
     }
+
 
 
     window.AttendanceAuth =
         Object.freeze({
 
             request,
-
-            createRequestId,
 
             getToken,
 
@@ -650,29 +535,26 @@
 
 
             /*
-             * requestId normalmente se genera aquí.
+             * Una llamada = una petición HTTP.
              *
-             * scanner.js puede proporcionarlo
-             * explícitamente cuando necesita
-             * reintentar exactamente la misma
-             * operación.
+             * scanner.js decide si debe hacerse
+             * un segundo intento.
              */
             confirmAttendance:
                 (
                     token,
                     folio,
-                    method,
-                    requestId =
-                        createRequestId()
+                    method
                 ) =>
                     request(
                         "confirmAttendance",
                         {
                             token,
                             folio,
-                            method,
-                            requestId
-                        }
+                            method
+                        },
+                        "POST",
+                        ATTENDANCE_REQUEST_TIMEOUT_MS
                     ),
 
 
@@ -686,6 +568,7 @@
                     )
 
         });
+
 
 
     async function initLogin() {
@@ -718,6 +601,7 @@
             false;
 
 
+
         function setBusy(
             value
         ) {
@@ -739,16 +623,21 @@
 
             button.textContent =
                 value
-                    ? "Verificando…"
-                    : "Iniciar sesión";
+                    ?
+                    "Verificando…"
+                    :
+                    "Iniciar sesión";
 
 
             form.setAttribute(
                 "aria-busy",
-                String(value)
+                String(
+                    value
+                )
             );
 
         }
+
 
 
         function showMessage(
@@ -768,6 +657,7 @@
         }
 
 
+
         form.addEventListener(
             "submit",
             async event => {
@@ -775,8 +665,11 @@
                 event.preventDefault();
 
 
-                if (busy)
+                if (busy) {
+
                     return;
+
+                }
 
 
                 const username =
@@ -789,7 +682,8 @@
 
 
                 if (
-                    !username ||
+                    !username
+                    ||
                     !password.value
                 ) {
 
@@ -797,6 +691,7 @@
                         "Ingresa tu usuario y contraseña.",
                         true
                     );
+
 
                     return;
 
@@ -829,10 +724,13 @@
 
 
                     if (
-                        !result.success ||
+                        !result.success
+                        ||
                         typeof result.token !==
-                            "string" ||
-                        !result.token ||
+                            "string"
+                        ||
+                        !result.token
+                        ||
                         result.role !==
                             "ATTENDANCE"
                     ) {
@@ -843,6 +741,7 @@
                             "No se pudo iniciar sesión. Revisa tus credenciales.",
                             true
                         );
+
 
                         return;
 
@@ -862,6 +761,7 @@
                             "El navegador no permite guardar la sesión. Habilita el almacenamiento del sitio.",
                             true
                         );
+
 
                         return;
 
@@ -897,7 +797,9 @@
         );
 
 
+
         void loadAppInfo();
+
 
 
         if (
@@ -916,14 +818,18 @@
         }
 
 
+
         try {
 
             const token =
                 getToken();
 
 
-            if (!token)
+            if (!token) {
+
                 return;
+
+            }
 
 
             setBusy(
@@ -940,8 +846,10 @@
 
 
             if (
-                result.success &&
-                result.valid &&
+                result.success
+                &&
+                result.valid
+                &&
                 result.role ===
                     "ATTENDANCE"
             ) {
@@ -961,7 +869,8 @@
 
             }
             else if (
-                result.valid === false
+                result.valid ===
+                    false
                 ||
                 result.sessionExpired
                 ||
@@ -1001,6 +910,7 @@
         }
 
     }
+
 
 
     if (
